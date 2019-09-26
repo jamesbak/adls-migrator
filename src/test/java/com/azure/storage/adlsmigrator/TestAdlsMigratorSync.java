@@ -301,18 +301,21 @@ public class TestAdlsMigratorSync {
 
   private Map<Text, CopyListingFileStatus> getListing(Path listingPath)
       throws Exception {
-    SequenceFile.Reader reader = new SequenceFile.Reader(conf,
-        SequenceFile.Reader.file(listingPath));
-    Text key = new Text();
-    CopyListingFileStatus value = new CopyListingFileStatus();
-    Map<Text, CopyListingFileStatus> values = new HashMap<>();
-    while (reader.next(key, value)) {
-      values.put(key, value);
-      key = new Text();
-      value = new CopyListingFileStatus();
+    try (SequenceFile.Reader reader = new SequenceFile.Reader(conf,
+        SequenceFile.Reader.file(listingPath)))
+    {
+      Text key = new Text();
+      CopyListingFileStatus value = new CopyListingFileStatus();
+      Map<Text, CopyListingFileStatus> values = new HashMap<>();
+      while (reader.next(key, value)) {
+        values.put(key, value);
+        key = new Text();
+        value = new CopyListingFileStatus();
+      }
+      return values;
     }
-    return values;
   }
+
 
   private void verifyCopy(FileStatus s, FileStatus t, boolean compareName)
       throws Exception {

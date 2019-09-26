@@ -21,3 +21,31 @@
 
 # virtual machine crash logs, see http://www.java.com/en/download/help/error_hotspot.xml
 hs_err_pid*
+
+.DS_Store
+*.iml
+*.ipr
+*.iws
+*.orig
+*.rej
+**/.keep
+*.sdf
+*.suo
+*.vcxproj.user
+*.patch
+.idea
+.svn
+.classpath
+.project
+.settings
+target
+build
+
+# Filesystem contract test options and credentials
+auth-keys.xml
+azure-auth-keys.xml
+azure-bfs-auth-keys.xml
+
+# External tool builders
+*/.externalToolBuilders
+*/maven-eclipse.xml

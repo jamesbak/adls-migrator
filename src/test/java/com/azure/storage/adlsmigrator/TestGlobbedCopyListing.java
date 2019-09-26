@@ -117,23 +117,26 @@ public class TestGlobbedCopyListing {
   }
 
   private void verifyContents(Path listingPath) throws Exception {
-    SequenceFile.Reader reader = new SequenceFile.Reader(cluster.getFileSystem(),
-                                              listingPath, new Configuration());
-    Text key   = new Text();
-    CopyListingFileStatus value = new CopyListingFileStatus();
-    Map<String, String> actualValues = new HashMap<String, String>();
-    while (reader.next(key, value)) {
-      if (value.isDirectory() && key.toString().equals("")) {
-        // ignore root with empty relPath, which is an entry to be 
-        // used for preserving root attributes etc.
-        continue;
+    try (SequenceFile.Reader reader = new SequenceFile.Reader(cluster.getFileSystem(),
+                                              listingPath, new Configuration()))
+    
+    {
+      Text key   = new Text();
+      CopyListingFileStatus value = new CopyListingFileStatus();
+      Map<String, String> actualValues = new HashMap<String, String>();
+      while (reader.next(key, value)) {
+        if (value.isDirectory() && key.toString().equals("")) {
+          // ignore root with empty relPath, which is an entry to be 
+          // used for preserving root attributes etc.
+          continue;
+        }
+        actualValues.put(value.getPath().toString(), key.toString());
       }
-      actualValues.put(value.getPath().toString(), key.toString());
-    }
 
-    Assert.assertEquals(expectedValues.size(), actualValues.size());
-    for (Map.Entry<String, String> entry : actualValues.entrySet()) {
-      Assert.assertEquals(entry.getValue(), expectedValues.get(entry.getKey()));
+      Assert.assertEquals(expectedValues.size(), actualValues.size());
+      for (Map.Entry<String, String> entry : actualValues.entrySet()) {
+        Assert.assertEquals(entry.getValue(), expectedValues.get(entry.getKey()));
+      }
     }
   }
 }
