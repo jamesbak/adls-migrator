@@ -43,6 +43,7 @@ import com.azure.storage.adlsmigrator.AdlsMigratorOptions;
 import com.azure.storage.adlsmigrator.AdlsMigratorOptions.FileAttribute;
 import com.azure.storage.adlsmigrator.mapred.RetriableFileCopyCommand.CopyReadException;
 import com.azure.storage.adlsmigrator.util.AdlsMigratorUtils;
+import com.azure.storage.adlsmigrator.mapred.lib.DataBoxSplit;
 import org.apache.hadoop.util.StringUtils;
 
 /**
@@ -89,7 +90,7 @@ public class CopyMapper extends Mapper<Text, CopyListingFileStatus, Text, Text> 
   private EnumSet<FileAttribute> preserve = EnumSet.noneOf(FileAttribute.class);
 
   private FileSystem targetFS = null;
-  private Path    targetWorkPath = null;
+  private Path targetDataBoxPath;
 
   /**
    * Implementation of the Mapper::setup() method. This extracts the AdlsMigrator-
@@ -112,15 +113,8 @@ public class CopyMapper extends Mapper<Text, CopyListingFileStatus, Text, Text> 
     preserve = AdlsMigratorUtils.unpackAttributes(conf.get(AdlsMigratorOptionSwitch.
         PRESERVE_STATUS.getConfigLabel()));
 
-    targetWorkPath = new Path(conf.get(AdlsMigratorConstants.CONF_LABEL_TARGET_WORK_PATH));
-    Path targetFinalPath = new Path(conf.get(
-            AdlsMigratorConstants.CONF_LABEL_TARGET_FINAL_PATH));
-    targetFS = targetFinalPath.getFileSystem(conf);
-
-    try {
-      overWrite = overWrite || targetFS.getFileStatus(targetFinalPath).isFile();
-    } catch (FileNotFoundException ignored) {
-    }
+    targetDataBoxPath = ((DataBoxSplit.TaskSplit)context.getInputSplit()).getDataBoxBaseUri();
+    targetFS = targetDataBoxPath.getFileSystem(conf);
 
     if (conf.get(AdlsMigratorConstants.CONF_LABEL_SSL_CONF) != null) {
       initializeSSLConf(context);
@@ -199,12 +193,11 @@ public class CopyMapper extends Mapper<Text, CopyListingFileStatus, Text, Text> 
   public void map(Text relPath, CopyListingFileStatus sourceFileStatus,
           Context context) throws IOException, InterruptedException {
     Path sourcePath = sourceFileStatus.getPath();
-
+    
     if (LOG.isDebugEnabled())
       LOG.debug("AdlsMigratorMapper::map(): Received " + sourcePath + ", " + relPath);
 
-    Path target = new Path(targetWorkPath.makeQualified(targetFS.getUri(),
-                          targetFS.getWorkingDirectory()) + relPath.toString());
+    Path target = new Path(targetDataBoxPath, relPath.toString());
 
     EnumSet<AdlsMigratorOptions.FileAttribute> fileAttributes
             = getFileAttributeSettings(context);
@@ -250,37 +243,31 @@ public class CopyMapper extends Mapper<Text, CopyListingFileStatus, Text, Text> 
 
       if (sourceCurrStatus.isDirectory()) {
         createTargetDirsWithRetry(description, target, context);
-        return;
-      }
-
-      FileAction action = checkUpdate(sourceFS, sourceCurrStatus, target,
-          targetStatus);
-
-      Path tmpTarget = target;
-      if (action == FileAction.SKIP) {
-        LOG.info("Skipping copy of " + sourceCurrStatus.getPath()
-                 + " to " + target);
-        updateSkipCounters(context, sourceCurrStatus);
-        context.write(null, new Text("SKIP: " + sourceCurrStatus.getPath()));
-
-        if (verboseLog) {
-          context.write(null,
-              new Text("FILE_SKIPPED: source=" + sourceFileStatus.getPath()
-              + ", size=" + sourceFileStatus.getLen() + " --> "
-              + "target=" + target + ", size=" + (targetStatus == null ?
-                  0 : targetStatus.getLen())));
-        }
       } else {
-        if (sourceCurrStatus.isSplit()) {
-          tmpTarget = AdlsMigratorUtils.getSplitChunkPath(target, sourceCurrStatus);
+        FileAction action = checkUpdate(sourceFS, sourceCurrStatus, target, targetStatus);
+
+        if (action == FileAction.SKIP) {
+          LOG.info("Skipping copy of " + sourceCurrStatus.getPath()
+                  + " to " + target);
+          updateSkipCounters(context, sourceCurrStatus);
+          context.write(null, new Text("SKIP: " + sourceCurrStatus.getPath()));
+
+          if (verboseLog) {
+            context.write(null,
+                new Text("FILE_SKIPPED: source=" + sourceFileStatus.getPath()
+                + ", size=" + sourceFileStatus.getLen() + " --> "
+                + "target=" + target + ", size=" + (targetStatus == null ?
+                    0 : targetStatus.getLen())));
+          }
+        } else {
+          if (LOG.isDebugEnabled()) {
+            LOG.debug("copying " + sourceCurrStatus + " " + target);
+          }
+          copyFileWithRetry(description, sourceCurrStatus, target,
+              targetStatus, context, action, fileAttributes);
         }
-        if (LOG.isDebugEnabled()) {
-          LOG.debug("copying " + sourceCurrStatus + " " + tmpTarget);
-        }
-        copyFileWithRetry(description, sourceCurrStatus, tmpTarget,
-            targetStatus, context, action, fileAttributes);
       }
-      AdlsMigratorUtils.preserve(target.getFileSystem(conf), tmpTarget,
+      AdlsMigratorUtils.preserve(target.getFileSystem(conf), target,
           sourceCurrStatus, fileAttributes, preserveRawXattrs);
     } catch (IOException exception) {
       handleFailures(exception, sourceFileStatus, target, context);
@@ -355,13 +342,15 @@ public class CopyMapper extends Mapper<Text, CopyListingFileStatus, Text, Text> 
   private void handleFailures(IOException exception,
       CopyListingFileStatus sourceFileStatus, Path target, Context context)
       throws IOException, InterruptedException {
+
     LOG.error("Failure in copying " + sourceFileStatus.getPath() +
         (sourceFileStatus.isSplit()? ","
             + " offset=" + sourceFileStatus.getChunkOffset()
             + " chunkLength=" + sourceFileStatus.getChunkLength()
             : "") +
         " to " + target, exception);
-
+    AdlsMigratorUtils.appendSkippedFile(context.getConfiguration(), sourceFileStatus.getPath().toString(), exception);
+    
     if (ignoreFailures &&
         ExceptionUtils.indexOfType(exception, CopyReadException.class) != -1) {
       incrementCounter(context, Counter.FAIL, 1);
@@ -403,6 +392,10 @@ public class CopyMapper extends Mapper<Text, CopyListingFileStatus, Text, Text> 
 
   private boolean canSkip(FileSystem sourceFS, CopyListingFileStatus source,
       FileStatus target) throws IOException {
+    
+    if (target == null) {
+      return false;
+    }
     if (!syncFolders) {
       return true;
     }

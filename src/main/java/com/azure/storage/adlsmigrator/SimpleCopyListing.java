@@ -73,7 +73,7 @@ public class SimpleCopyListing extends CopyListing {
   private final boolean randomizeFileListing;
   private final int maxRetries = 3;
   private CopyFilter copyFilter;
-  private AdlsMigratorSync AdlsMigratorSync;
+  //private AdlsMigratorSync AdlsMigratorSync;
   private final Random rnd = new Random();
 
   /**
@@ -115,77 +115,15 @@ public class SimpleCopyListing extends CopyListing {
     this.randomizeFileListing = randomizeFileListing;
   }
 
-  protected SimpleCopyListing(Configuration configuration,
-                              Credentials credentials,
-                              AdlsMigratorSync AdlsMigratorSync) {
-    this(configuration, credentials);
-    this.AdlsMigratorSync = AdlsMigratorSync;
-  }
-
   @Override
   protected void validatePaths(AdlsMigratorOptions options)
       throws IOException, InvalidInputException {
-
-    Path targetPath = options.getTargetPath();
-    FileSystem targetFS = targetPath.getFileSystem(getConf());
-    boolean targetExists = false;
-    boolean targetIsFile = false;
-    try {
-      targetIsFile = targetFS.getFileStatus(targetPath).isFile();
-      targetExists = true;
-    } catch (FileNotFoundException ignored) {
-    }
-    targetPath = targetFS.makeQualified(targetPath);
-    final boolean targetIsReservedRaw =
-        Path.getPathWithoutSchemeAndAuthority(targetPath).toString().
-            startsWith(HDFS_RESERVED_RAW_DIRECTORY_NAME);
-
-    //If target is a file, then source has to be single file
-    if (targetIsFile) {
-      if (options.getSourcePaths().size() > 1) {
-        throw new InvalidInputException("Multiple source being copied to a file: " +
-            targetPath);
-      }
-
-      Path srcPath = options.getSourcePaths().get(0);
-      FileSystem sourceFS = srcPath.getFileSystem(getConf());
-      if (!sourceFS.isFile(srcPath)) {
-        throw new InvalidInputException("Cannot copy " + srcPath +
-            ", which is not a file to " + targetPath);
-      }
-    }
-
-    if (options.shouldAtomicCommit() && targetExists) {
-      throw new InvalidInputException("Target path for atomic-commit already exists: " +
-        targetPath + ". Cannot atomic-commit to pre-existing target-path.");
-    }
 
     for (Path path: options.getSourcePaths()) {
       FileSystem fs = path.getFileSystem(getConf());
       if (!fs.exists(path)) {
         throw new InvalidInputException(path + " doesn't exist");
       }
-      if (Path.getPathWithoutSchemeAndAuthority(path).toString().
-          startsWith(HDFS_RESERVED_RAW_DIRECTORY_NAME)) {
-        if (!targetIsReservedRaw) {
-          final String msg = "The source path '" + path + "' starts with " +
-              HDFS_RESERVED_RAW_DIRECTORY_NAME + " but the target path '" +
-              targetPath + "' does not. Either all or none of the paths must " +
-              "have this prefix.";
-          throw new InvalidInputException(msg);
-        }
-      } else if (targetIsReservedRaw) {
-        final String msg = "The target path '" + targetPath + "' starts with " +
-                HDFS_RESERVED_RAW_DIRECTORY_NAME + " but the source path '" +
-                path + "' does not. Either all or none of the paths must " +
-                "have this prefix.";
-        throw new InvalidInputException(msg);
-      }
-    }
-
-    if (targetIsReservedRaw) {
-      options.preserveRawXattrs();
-      getConf().setBoolean(AdlsMigratorConstants.CONF_LABEL_PRESERVE_RAWXATTRS, true);
     }
 
     /* This is requires to allow map tasks to access each of the source
@@ -203,7 +141,7 @@ public class SimpleCopyListing extends CopyListing {
   protected void doBuildListing(Path pathToListingFile,
                                 AdlsMigratorOptions options) throws IOException {
     if(options.shouldUseSnapshotDiff()) {
-      doBuildListingWithSnapshotDiff(getWriter(pathToListingFile), options);
+      //doBuildListingWithSnapshotDiff(getWriter(pathToListingFile), options);
     }else {
       doBuildListing(getWriter(pathToListingFile), options);
     }
@@ -212,7 +150,7 @@ public class SimpleCopyListing extends CopyListing {
   /**
    * Get a path with its scheme and authority.
    */
-  private Path getPathWithSchemeAndAuthority(Path path) throws IOException {
+  /*private Path getPathWithSchemeAndAuthority(Path path) throws IOException {
     FileSystem fs= path.getFileSystem(getConf());
     String scheme = path.toUri().getScheme();
     if (scheme == null) {
@@ -225,13 +163,13 @@ public class SimpleCopyListing extends CopyListing {
     }
 
     return new Path(scheme, authority, makeQualified(path).toUri().getPath());
-  }
+  }*/
 
   /**
    * Write a single file/directory to the sequence file.
    * @throws IOException
    */
-  private void addToFileListing(SequenceFile.Writer fileListWriter,
+  /*private void addToFileListing(SequenceFile.Writer fileListWriter,
       Path sourceRoot, Path path, AdlsMigratorOptions options) throws IOException {
     sourceRoot = getPathWithSchemeAndAuthority(sourceRoot);
     path = getPathWithSchemeAndAuthority(path);
@@ -248,7 +186,7 @@ public class SimpleCopyListing extends CopyListing {
             options.getBlocksPerChunk());
     writeToFileListingRoot(fileListWriter, fileCopyListingStatus,
         sourceRoot, options);
-  }
+  }*/
 
   /**
    * Build a copy list based on the snapshot diff report.
@@ -260,7 +198,7 @@ public class SimpleCopyListing extends CopyListing {
    * into the list.
    * @throws IOException
    */
-  @VisibleForTesting
+  /*@VisibleForTesting
   protected void doBuildListingWithSnapshotDiff(
       SequenceFile.Writer fileListWriter, AdlsMigratorOptions options)
       throws IOException {
@@ -308,7 +246,7 @@ public class SimpleCopyListing extends CopyListing {
     } finally {
       IOUtils.cleanup(LOG, fileListWriter);
     }
-  }
+  }*/
 
   /**
    * Collect the list of 
@@ -352,8 +290,7 @@ public class SimpleCopyListing extends CopyListing {
         if (!explore || rootStatus.isDirectory()) {
           LinkedList<CopyListingFileStatus> rootCopyListingStatus =
               AdlsMigratorUtils.toCopyListingFileStatus(sourceFS, rootStatus,
-                  preserveAcls, preserveXAttrs, preserveRawXAttrs,
-                  options.getBlocksPerChunk());
+                  preserveAcls, preserveXAttrs, preserveRawXAttrs);
           writeToFileListingRoot(fileListWriter, rootCopyListingStatus,
               sourcePathRoot, options);
         }
@@ -367,8 +304,7 @@ public class SimpleCopyListing extends CopyListing {
                 AdlsMigratorUtils.toCopyListingFileStatus(sourceFS, sourceStatus,
                     preserveAcls && sourceStatus.isDirectory(),
                     preserveXAttrs && sourceStatus.isDirectory(),
-                    preserveRawXAttrs && sourceStatus.isDirectory(),
-                    options.getBlocksPerChunk());
+                    preserveRawXAttrs && sourceStatus.isDirectory());
             for (CopyListingFileStatus fs : sourceCopyListingStatus) {
               if (randomizeFileListing) {
                 addToFileListing(statusList,
@@ -449,21 +385,13 @@ public class SimpleCopyListing extends CopyListing {
   private Path computeSourceRootPath(FileStatus sourceStatus,
                                      AdlsMigratorOptions options) throws IOException {
 
-    Path target = options.getTargetPath();
-    FileSystem targetFS = target.getFileSystem(getConf());
-    final boolean targetPathExists = options.getTargetPathExists();
-
     boolean solitaryFile = options.getSourcePaths().size() == 1
                                                 && !sourceStatus.isDirectory();
 
     if (solitaryFile) {
-      if (!targetPathExists || targetFS.isFile(target)) {
-        return sourceStatus.getPath();
-      } else {
-        return sourceStatus.getPath().getParent();
-      }
+      return sourceStatus.getPath();
     } else {
-      boolean specialHandling = (options.getSourcePaths().size() == 1 && !targetPathExists) ||
+      boolean specialHandling = options.getSourcePaths().size() == 1 ||
           options.shouldSyncFolder() || options.shouldOverwrite();
 
       if ((specialHandling && sourceStatus.isDirectory()) ||
@@ -648,8 +576,7 @@ public class SimpleCopyListing extends CopyListing {
               AdlsMigratorUtils.toCopyListingFileStatus(sourceFS, child,
                 preserveAcls && child.isDirectory(),
                 preserveXAttrs && child.isDirectory(),
-                preserveRawXattrs && child.isDirectory(),
-                options.getBlocksPerChunk());
+                preserveRawXattrs && child.isDirectory());
 
             for (CopyListingFileStatus fs : childCopyListingStatus) {
               if (randomizeFileListing) {

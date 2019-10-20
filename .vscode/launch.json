@@ -1,0 +1,23 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "type": "java",
+            "name": "Debug (Attach)",
+            "request": "attach",
+            "hostName": "localhost",
+            "port": 5432
+        },
+        {
+            "type": "java",
+            "name": "Debug (Launch)-AdlsMigrator<adls-migrator>",
+            "request": "launch",
+            "mainClass": "com.azure.storage.adlsmigrator.AdlsMigrator",
+            "projectName": "adls-migrator",
+            "args": ["-Djava.net.preferIPv4Stack=true", "-Dhadoop.log.dir=/home/jamesbak/hadoop-2.9.2/logs", "-Dhadoop.log.file=hadoop.log", "-Dhadoop.home.dir=/home/jamesbak/hadoop-2.9.2", "-Dhadoop.id.str=jamesbak", "-Dhadoop.root.logger=INFO,console", "-Djava.library.path=/home/jamesbak/hadoop-2.9.2/lib/native", "-Dhadoop.policy.file=hadoop-policy.xml", "-Djava.net.preferIPv4Stack=true", "-Dhadoop.security.logger=INFO,NullAppender", "-d", ".\\target\\databox-config.json", "-c", "databox1", "/"]
+        }
+    ]
+}

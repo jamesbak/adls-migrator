@@ -66,17 +66,6 @@ public enum AdlsMigratorOptionSwitch {
           "files or directories")),
 
   /**
-   * Deletes missing files in target that are missing from source
-   * This allows the target to be in sync with the source contents
-   * Typically used in conjunction with SYNC_FOLDERS
-   * Incompatible with ATOMIC_COMMIT
-   */
-  DELETE_MISSING(AdlsMigratorConstants.CONF_LABEL_DELETE_MISSING,
-      new Option("delete", false, "Delete from target, " +
-          "files missing in source. Delete is applicable only"
-          + " with update or overwrite options")),
-
-  /**
    * Configuration file to use with hftps:// for securely copying
    * files across clusters. Typically the configuration file contains
    * truststore/keystore information such as location, password and type
@@ -108,19 +97,25 @@ public enum AdlsMigratorOptionSwitch {
       new Option("f", true, "List of files that need to be copied")),
 
   /**
-   * Copy all the source files and commit them atomically to the target
-   * This is typically useful in cases where there is a process
-   * polling for availability of a file/dir. This option is incompatible
-   * with SYNC_FOLDERS and DELETE_MISSING
+   * The list of Data Boxes to copy to. This is a JSON file that includes
+   * the DNS name of each Data Box, the account key & size.
+   * This JSON schema matches that defined in {@link com.azure.storage.adlsmigrator.AdlsMigratorOptions.DataBoxItem}.
    */
-  ATOMIC_COMMIT(AdlsMigratorConstants.CONF_LABEL_ATOMIC_COPY,
-      new Option("atomic", false, "Commit all changes or none")),
+  DATABOX_FILE_LISTING(AdlsMigratorConstants.CONF_LABEL_DATABOX_LISTING,
+      new Option("d", true, "JSON file specifying the list of Data Boxes with sizes to copy data to")),
 
   /**
-   * Work path to be used only in conjunction in Atomic commit
+   * The name of the container on each Data Box to copy the data to.
    */
-  WORK_PATH(AdlsMigratorConstants.CONF_LABEL_WORK_PATH,
-      new Option("tmp", true, "Intermediate work path to be used for atomic commit")),
+  TARGET_CONTAINER(AdlsMigratorConstants.CONF_LABEL_TARGET_CONTAINER,
+      new Option("c", true, "Target container name on each Data Box")),
+
+  /**
+   * The name of the container on each Data Box to copy the data to.
+   */
+  NUM_TASKS_PER_DATABOX(AdlsMigratorConstants.CONF_LABEL_NUM_TASKS_PER_DATABOX,
+      new Option("n", true, "Number of maps for each 100TB Data Box. Actual value is pro-rated for specified Data Box size. " +
+                            "This value can be overridden by the -m option, which specifies the total number of maps.")),
 
   /**
    * Log path where adlsmigrator output logs are written to
@@ -134,14 +129,6 @@ public enum AdlsMigratorOptionSwitch {
   VERBOSE_LOG(AdlsMigratorConstants.CONF_LABEL_VERBOSE_LOG,
       new Option("v", false,
           "Log additional info (path, size) in the SKIP/COPY log")),
-
-  /**
-   * Copy strategy is use. This could be dynamic or uniform size etc.
-   * adlsmigrator would use an appropriate input format based on this.
-   */
-  COPY_STRATEGY(AdlsMigratorConstants.CONF_LABEL_COPY_STRATEGY,
-      new Option("strategy", true, "Copy strategy to use. Default is " +
-          "dividing work based on file sizes")),
 
   /**
    * Skip CRC checks between source and target, when determining what
@@ -167,34 +154,11 @@ public enum AdlsMigratorOptionSwitch {
       "Use snapshot diff report to identify the difference between source and target"),
       2),
 
-  RDIFF(AdlsMigratorConstants.CONF_LABEL_RDIFF,
-      new Option("rdiff", false,
-      "Use target snapshot diff report to identify changes made on target"),
-      2),
-
   /**
-   * Should DisctpExecution be blocking
+   * Should AdlsMigrator be blocking
    */
   BLOCKING("",
       new Option("async", false, "Should adlsmigrator execution be blocking")),
-
-  FILE_LIMIT("",
-      new Option("filelimit", true, "(Deprecated!) Limit number of files " +
-              "copied to <= n")),
-
-  SIZE_LIMIT("",
-      new Option("sizelimit", true, "(Deprecated!) Limit number of files " +
-              "copied to <= n bytes")),
-
-  BLOCKS_PER_CHUNK(AdlsMigratorConstants.CONF_LABEL_BLOCKS_PER_CHUNK,
-      new Option("blocksperchunk", true, "If set to a positive value, files"
-          + "with more blocks than this value will be split into chunks of "
-          + "<blocksperchunk> blocks to be transferred in parallel, and "
-          + "reassembled on the destination. By default, <blocksperchunk> is "
-          + "0 and the files will be transmitted in their entirety without "
-          + "splitting. This switch is only applicable when the source file "
-          + "system implements getBlockLocations method and the target file "
-          + "system implements concat method")),
 
   /**
    * Configurable copy buffer size.
@@ -216,7 +180,19 @@ public enum AdlsMigratorOptionSwitch {
    */
   FILTERS(AdlsMigratorConstants.CONF_LABEL_FILTERS_FILE,
       new Option("filters", true, "The path to a file containing a list of"
-          + " strings for paths to be excluded from the copy."));
+          + " strings for paths to be excluded from the copy.")),
+
+  /**
+   * Path specifying output log listing files that cannot be placed on any Data Box.
+   */
+  SKIPPED_FILES_LOG(AdlsMigratorConstants.CONF_LABEL_SKIPPED_FILES_LOGFILE,
+      new Option("skippedlog", true, "The path specifying output log listing files that cannot be placed on any Data Box")),
+
+  /**
+   * Local path specifying JSON file containing list of source file identities.
+   */
+  IDENTITIES_MAP(AdlsMigratorConstants.CONF_LABEL_IDENTITIES_MAP_FILE,
+      new Option("identitymap", true, "The local path specifying location of a JSON file that contains identities to be mapped"));
 
 
   public static final String PRESERVE_STATUS_DEFAULT = "-prbugpct";

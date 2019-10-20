@@ -102,20 +102,6 @@ public class OptionsParser {
       option.setIgnoreFailures(true);
     }
 
-    if (command.hasOption(AdlsMigratorOptionSwitch.ATOMIC_COMMIT.getSwitch())) {
-      option.setAtomicCommit(true);
-    }
-
-    if (command.hasOption(AdlsMigratorOptionSwitch.WORK_PATH.getSwitch()) &&
-        option.shouldAtomicCommit()) {
-      String workPath = getVal(command, AdlsMigratorOptionSwitch.WORK_PATH.getSwitch());
-      if (workPath != null && !workPath.isEmpty()) {
-        option.setAtomicWorkPath(new Path(workPath));
-      }
-    } else if (command.hasOption(AdlsMigratorOptionSwitch.WORK_PATH.getSwitch())) {
-      throw new IllegalArgumentException("-tmp work-path can only be specified along with -atomic");
-    }
-
     if (command.hasOption(AdlsMigratorOptionSwitch.LOG_PATH.getSwitch())) {
       option.setLogPath(new Path(getVal(command, AdlsMigratorOptionSwitch.LOG_PATH.getSwitch())));
     }
@@ -130,10 +116,6 @@ public class OptionsParser {
 
     if (command.hasOption(AdlsMigratorOptionSwitch.APPEND.getSwitch())) {
       option.setAppend(true);
-    }
-
-    if (command.hasOption(AdlsMigratorOptionSwitch.DELETE_MISSING.getSwitch())) {
-      option.setDeleteMissing(true);
     }
 
     if (command.hasOption(AdlsMigratorOptionSwitch.SKIP_CRC.getSwitch())) {
@@ -155,10 +137,7 @@ public class OptionsParser {
 
     parseMaxMaps(command, option);
 
-    if (command.hasOption(AdlsMigratorOptionSwitch.COPY_STRATEGY.getSwitch())) {
-      option.setCopyStrategy(
-            getVal(command, AdlsMigratorOptionSwitch.COPY_STRATEGY.getSwitch()));
-    }
+    parseNumTasksPerDatabox(command, option);
 
     parsePreserveStatus(command, option);
 
@@ -168,23 +147,19 @@ public class OptionsParser {
       checkSnapshotsArgs(snapshots);
       option.setUseDiff(snapshots[0], snapshots[1]);
     }
-    if (command.hasOption(AdlsMigratorOptionSwitch.RDIFF.getSwitch())) {
-      String[] snapshots = getVals(command,
-          AdlsMigratorOptionSwitch.RDIFF.getSwitch());
-      checkSnapshotsArgs(snapshots);
-      option.setUseRdiff(snapshots[0], snapshots[1]);
-    }
-
-    parseFileLimit(command);
-
-    parseSizeLimit(command);
 
     if (command.hasOption(AdlsMigratorOptionSwitch.FILTERS.getSwitch())) {
       option.setFiltersFile(getVal(command,
           AdlsMigratorOptionSwitch.FILTERS.getSwitch()));
     }
 
-    parseBlocksPerChunk(command, option);
+    if (command.hasOption(AdlsMigratorOptionSwitch.SKIPPED_FILES_LOG.getSwitch())) {
+      option.setSkippedFilesLog(getVal(command, AdlsMigratorOptionSwitch.SKIPPED_FILES_LOG.getSwitch()));
+    }
+
+    if (command.hasOption(AdlsMigratorOptionSwitch.IDENTITIES_MAP.getSwitch())) {
+      option.setIdentitiesMapFile(getVal(command, AdlsMigratorOptionSwitch.IDENTITIES_MAP.getSwitch()));
+    }
 
     parseCopyBufferSize(command, option);
 
@@ -195,36 +170,6 @@ public class OptionsParser {
     return option;
   }
 
-
-  /**
-   * A helper method to parse chunk size in number of blocks.
-   * Used when breaking large file into chunks to copy in parallel.
-   *
-   * @param command command line arguments
-   */
-  private static void parseBlocksPerChunk(CommandLine command,
-      AdlsMigratorOptions option) {
-    boolean hasOption =
-        command.hasOption(AdlsMigratorOptionSwitch.BLOCKS_PER_CHUNK.getSwitch());
-    LOG.info("parseChunkSize: " +
-        AdlsMigratorOptionSwitch.BLOCKS_PER_CHUNK.getSwitch() + " " + hasOption);
-    if (hasOption) {
-      String chunkSizeString = getVal(command,
-          AdlsMigratorOptionSwitch.BLOCKS_PER_CHUNK.getSwitch().trim());
-      try {
-        int csize = Integer.parseInt(chunkSizeString);
-        if (csize < 0) {
-          csize = 0;
-        }
-        LOG.info("Set adlsmigrator blocksPerChunk to " + csize);
-        option.setBlocksPerChunk(csize);
-      }
-      catch (NumberFormatException e) {
-        throw new IllegalArgumentException("blocksPerChunk is invalid: "
-            + chunkSizeString, e);
-      }
-    }
-  }
 
   /**
    * A helper method to parse copyBufferSize.
@@ -244,49 +189,6 @@ public class OptionsParser {
         throw new IllegalArgumentException("copyBufferSize is invalid: "
             + copyBufferSizeStr, e);
       }
-    }
-  }
-
-  /**
-   * parseSizeLimit is a helper method for parsing the deprecated argument
-   * SIZE_LIMIT.
-   *
-   * @param command command line arguments
-   */
-  private static void parseSizeLimit(CommandLine command) {
-    if (command.hasOption(AdlsMigratorOptionSwitch.SIZE_LIMIT.getSwitch())) {
-      String sizeLimitString = getVal(command,
-                              AdlsMigratorOptionSwitch.SIZE_LIMIT.getSwitch().trim());
-      try {
-        Long.parseLong(sizeLimitString);
-      }
-      catch (NumberFormatException e) {
-        throw new IllegalArgumentException("Size-limit is invalid: "
-                                            + sizeLimitString, e);
-      }
-      LOG.warn(AdlsMigratorOptionSwitch.SIZE_LIMIT.getSwitch() + " is a deprecated" +
-              " option. Ignoring.");
-    }
-  }
-
-  /**
-   * parseFileLimit is a helper method for parsing the deprecated
-   * argument FILE_LIMIT.
-   *
-   * @param command command line arguments
-   */
-  private static void parseFileLimit(CommandLine command) {
-    if (command.hasOption(AdlsMigratorOptionSwitch.FILE_LIMIT.getSwitch())) {
-      String fileLimitString = getVal(command,
-                              AdlsMigratorOptionSwitch.FILE_LIMIT.getSwitch().trim());
-      try {
-        Integer.parseInt(fileLimitString);
-      } catch (NumberFormatException e) {
-        throw new IllegalArgumentException("File-limit is invalid: "
-                                            + fileLimitString, e);
-      }
-      LOG.warn(AdlsMigratorOptionSwitch.FILE_LIMIT.getSwitch() + " is a deprecated" +
-          " option. Ignoring.");
     }
   }
 
@@ -330,6 +232,24 @@ public class OptionsParser {
       } catch (NumberFormatException e) {
         throw new IllegalArgumentException("Number of maps is invalid: " +
             getVal(command, AdlsMigratorOptionSwitch.MAX_MAPS.getSwitch()), e);
+      }
+    }
+  }
+
+  /**
+   * parseNumTasksPerDatabox is a helper method for parsing NUM_TASKS_PER_DATABOX.
+   *
+   * @param command command line arguments
+   * @param option  parsed adlsmigrator options
+   */
+  private static void parseNumTasksPerDatabox(CommandLine command, AdlsMigratorOptions option) {
+    if (command.hasOption(AdlsMigratorOptionSwitch.NUM_TASKS_PER_DATABOX.getSwitch())) {
+      try {
+        Integer tasks = Integer.parseInt(getVal(command, AdlsMigratorOptionSwitch.NUM_TASKS_PER_DATABOX.getSwitch()).trim());
+        option.setTasksPerDataBox(tasks);
+      } catch (NumberFormatException e) {
+        throw new IllegalArgumentException("Number of tasks per Data Box is invalid: " +
+            getVal(command, AdlsMigratorOptionSwitch.NUM_TASKS_PER_DATABOX.getSwitch()), e);
       }
     }
   }
@@ -388,42 +308,67 @@ public class OptionsParser {
    * @param command command line arguments
    * @return        AdlsMigratorOptions
    */
-  private static AdlsMigratorOptions parseSourceAndTargetPaths(
-      CommandLine command) {
+  private static AdlsMigratorOptions parseSourceAndTargetPaths(CommandLine command) {
     AdlsMigratorOptions option;
-    Path targetPath;
+    String dataBoxesConfigFile = null;
+    String singleDataBox = "";
     List<Path> sourcePaths = new ArrayList<Path>();
+    boolean requiresTargetContainer = true;
 
     String[] leftOverArgs = command.getArgs();
-    if (leftOverArgs == null || leftOverArgs.length < 1) {
-      throw new IllegalArgumentException("Target path not specified");
-    }
-
-    //Last Argument is the target path
-    targetPath = new Path(leftOverArgs[leftOverArgs.length - 1].trim());
-
-    //Copy any source paths in the arguments to the list
-    for (int index = 0; index < leftOverArgs.length - 1; index++) {
-      sourcePaths.add(new Path(leftOverArgs[index].trim()));
-    }
-
-    /* If command has source file listing, use it else, fall back on source
-       paths in args.  If both are present, throw exception and bail */
-    if (command.hasOption(
-        AdlsMigratorOptionSwitch.SOURCE_FILE_LISTING.getSwitch())) {
-      if (!sourcePaths.isEmpty()) {
-        throw new IllegalArgumentException("Both source file listing and " +
-            "source paths present");
+    int leftOverArgsMaxIndex = leftOverArgs.length;
+    if (command.hasOption(AdlsMigratorOptionSwitch.DATABOX_FILE_LISTING.getSwitch())) {
+      dataBoxesConfigFile = getVal(command, AdlsMigratorOptionSwitch.DATABOX_FILE_LISTING.getSwitch());
+      LOG.info("Data Box config file: " + dataBoxesConfigFile);
+    } else {
+      //Last Argument is the single Data Box
+      if (leftOverArgs == null || leftOverArgs.length < 1) {
+        throw new IllegalArgumentException("Target Data Box not specified");
       }
-      option = new AdlsMigratorOptions(new Path(getVal(command, AdlsMigratorOptionSwitch.
-          SOURCE_FILE_LISTING.getSwitch())), targetPath);
+      singleDataBox = leftOverArgs[--leftOverArgsMaxIndex].trim();
+      requiresTargetContainer = false;
+      LOG.info("Single Data Box: " + singleDataBox);
+    }
+    //Copy any source paths in the arguments to the list
+    for (int index = 0; index < leftOverArgsMaxIndex; index++) {
+      sourcePaths.add(new Path(leftOverArgs[index].trim()));
+      LOG.info("Source path: " + leftOverArgs[index]);
+    }
+    if (command.hasOption(AdlsMigratorOptionSwitch.SOURCE_FILE_LISTING.getSwitch())) {
+      if (!sourcePaths.isEmpty()) {
+        throw new IllegalArgumentException("Both source file listing and source paths present");
+      }
+      option = new AdlsMigratorOptions(new Path(getVal(command, AdlsMigratorOptionSwitch.SOURCE_FILE_LISTING.getSwitch())));
     } else {
       if (sourcePaths.isEmpty()) {
-        throw new IllegalArgumentException("Neither source file listing nor " +
-            "source paths present");
+        throw new IllegalArgumentException("Neither source file listing nor source paths present");
       }
-      option = new AdlsMigratorOptions(sourcePaths, targetPath);
+      option = new AdlsMigratorOptions(sourcePaths);
     }
+    if (StringUtils.isNotBlank(dataBoxesConfigFile)) {
+      try {
+        option.setDataBoxesConfigFile(dataBoxesConfigFile);
+        for (AdlsMigratorOptions.DataBoxItem databox : option.getDataBoxes()) {
+          LOG.info("Data Box: DNS: " + databox.getDataBoxDns() + ", key: " + databox.getAccountKey() + ", size: " + databox.getSizeInBytes());
+        }
+      } catch (java.io.IOException ex) {
+        throw new IllegalArgumentException("Error reading specified Data Box configuration file", ex);
+      }
+    } else {
+      option.setSingleDataBox(singleDataBox);
+    }
+    if (requiresTargetContainer) {
+      if (!command.hasOption(AdlsMigratorOptionSwitch.TARGET_CONTAINER.getSwitch())) {
+        throw new IllegalArgumentException("Target container must be specified when using -c argument");
+      } else {
+        option.setTargetContainer(getVal(command, AdlsMigratorOptionSwitch.TARGET_CONTAINER.getSwitch()));
+      }
+    } else {
+      if (command.hasOption(AdlsMigratorOptionSwitch.TARGET_CONTAINER.getSwitch())) {
+        throw new IllegalArgumentException("Cannot specify target container if Data Box location is also specified");
+      }
+    }
+
     return option;
   }
 
@@ -442,6 +387,6 @@ public class OptionsParser {
 
   public static void usage() {
     HelpFormatter formatter = new HelpFormatter();
-    formatter.printHelp("adlsmigrator OPTIONS [source_path...] <target_path>\n\nOPTIONS", cliOptions);
+    formatter.printHelp("adlsmigrator OPTIONS [source_path...] [target_data_box]\n\nOPTIONS", cliOptions);
   }
 }

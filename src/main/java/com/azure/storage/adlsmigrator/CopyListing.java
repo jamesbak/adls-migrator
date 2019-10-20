@@ -48,7 +48,7 @@ import com.google.common.collect.Sets;
 public abstract class CopyListing extends Configured {
 
   private Credentials credentials;
-  static final Log LOG = LogFactory.getLog(AdlsMigrator.class);
+  static final Log LOG = LogFactory.getLog(CopyListing.class);
   /**
    * Build listing function creates the input listing that adlsmigrator uses to
    * perform the copy.
@@ -145,22 +145,12 @@ public abstract class CopyListing extends Configured {
     Configuration config = getConf();
     FileSystem fs = pathToListFile.getFileSystem(config);
 
-    final boolean splitLargeFile = options.splitLargeFile();
-
-    // When splitLargeFile is enabled, we don't randomize the copylist
-    // earlier, so we don't do the sorting here. For a file that has
-    // multiple entries due to split, we check here that their
-    // <chunkOffset, chunkLength> is continuous.
-    //
-    Path checkPath = splitLargeFile?
-        pathToListFile : AdlsMigratorUtils.sortListing(fs, config, pathToListFile);
+    Path checkPath = AdlsMigratorUtils.sortListing(fs, config, pathToListFile);
 
     SequenceFile.Reader reader = new SequenceFile.Reader(
                           config, SequenceFile.Reader.file(checkPath));
     try {
       Text lastKey = new Text("*"); //source relative path can never hold *
-      long lastChunkOffset = -1;
-      long lastChunkLength = -1;
       CopyListingFileStatus lastFileStatus = new CopyListingFileStatus();
 
       Text currentKey = new Text();
@@ -171,21 +161,9 @@ public abstract class CopyListing extends Configured {
         if (currentKey.equals(lastKey)) {
           CopyListingFileStatus currentFileStatus = new CopyListingFileStatus();
           reader.getCurrentValue(currentFileStatus);
-          if (!splitLargeFile) {
-            throw new DuplicateFileException("File " + lastFileStatus.getPath()
-                + " and " + currentFileStatus.getPath()
-                + " would cause duplicates. Aborting");
-          } else {
-            if (lastChunkOffset + lastChunkLength !=
-                currentFileStatus.getChunkOffset()) {
-              throw new InvalidInputException("File " + lastFileStatus.getPath()
-                  + " " + lastChunkOffset + "," + lastChunkLength
-                  + " and " + currentFileStatus.getPath()
-                  + " " + currentFileStatus.getChunkOffset() + ","
-                  + currentFileStatus.getChunkLength()
-                  + " are not continuous. Aborting");
-            }
-          }
+          throw new DuplicateFileException("File " + lastFileStatus.getPath()
+              + " and " + currentFileStatus.getPath()
+              + " would cause duplicates. Aborting");
         }
         reader.getCurrentValue(lastFileStatus);
         if (options.shouldPreserve(AdlsMigratorOptions.FileAttribute.ACL)) {
@@ -206,10 +184,6 @@ public abstract class CopyListing extends Configured {
         }
 
         lastKey.set(currentKey);
-        if (splitLargeFile) {
-          lastChunkOffset = lastFileStatus.getChunkOffset();
-          lastChunkLength = lastFileStatus.getChunkLength();
-        }
         if (options.shouldUseDiff() && LOG.isDebugEnabled()) {
           LOG.debug("Copy list entry " + idx + ": " +
                   lastFileStatus.getPath().toUri().getPath());

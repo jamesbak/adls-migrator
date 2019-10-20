@@ -40,88 +40,9 @@ import java.io.IOException;
  */
 public class CopyOutputFormat<K, V> extends TextOutputFormat<K, V> {
 
-  /**
-   * Setter for the working directory for AdlsMigrator (where files will be copied
-   * before they are moved to the final commit-directory.)
-   * @param job The Job on whose configuration the working-directory is to be set.
-   * @param workingDirectory The path to use as the working directory.
-   */
-  public static void setWorkingDirectory(Job job, Path workingDirectory) {
-    job.getConfiguration().set(AdlsMigratorConstants.CONF_LABEL_TARGET_WORK_PATH,
-        workingDirectory.toString());
-  }
-
-  /**
-   * Setter for the final directory for AdlsMigrator (where files copied will be
-   * moved, atomically.)
-   * @param job The Job on whose configuration the working-directory is to be set.
-   * @param commitDirectory The path to use for final commit.
-   */
-  public static void setCommitDirectory(Job job, Path commitDirectory) {
-    job.getConfiguration().set(AdlsMigratorConstants.CONF_LABEL_TARGET_FINAL_PATH,
-        commitDirectory.toString());
-  }
-
-  /**
-   * Getter for the working directory.
-   * @param job The Job from whose configuration the working-directory is to
-   * be retrieved.
-   * @return The working-directory Path.
-   */
-  public static Path getWorkingDirectory(Job job) {
-    return getWorkingDirectory(job.getConfiguration());
-  }
-
-  private static Path getWorkingDirectory(Configuration conf) {
-    String workingDirectory = conf.get(AdlsMigratorConstants.CONF_LABEL_TARGET_WORK_PATH);
-    if (workingDirectory == null || workingDirectory.isEmpty()) {
-      return null;
-    } else {
-      return new Path(workingDirectory);
-    }
-  }
-
-  /**
-   * Getter for the final commit-directory.
-   * @param job The Job from whose configuration the commit-directory is to be
-   * retrieved.
-   * @return The commit-directory Path.
-   */
-  public static Path getCommitDirectory(Job job) {
-    return getCommitDirectory(job.getConfiguration());
-  }
-
-  private static Path getCommitDirectory(Configuration conf) {
-    String commitDirectory = conf.get(AdlsMigratorConstants.CONF_LABEL_TARGET_FINAL_PATH);
-    if (commitDirectory == null || commitDirectory.isEmpty()) {
-      return null;
-    } else {
-      return new Path(commitDirectory);
-    }
-  }
-
   /** {@inheritDoc} */
   @Override
   public OutputCommitter getOutputCommitter(TaskAttemptContext context) throws IOException {
     return new CopyCommitter(getOutputPath(context), context);
-  }
-
-  /** {@inheritDoc} */
-  @Override
-  public void checkOutputSpecs(JobContext context) throws IOException {
-    Configuration conf = context.getConfiguration();
-
-    if (getCommitDirectory(conf) == null) {
-      throw new IllegalStateException("Commit directory not configured");
-    }
-
-    Path workingPath = getWorkingDirectory(conf);
-    if (workingPath == null) {
-      throw new IllegalStateException("Working directory not configured");
-    }
-
-    // get delegation token for outDir's file system
-    TokenCache.obtainTokensForNamenodes(context.getCredentials(),
-                                        new Path[] {workingPath}, conf);
   }
 }

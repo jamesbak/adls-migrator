@@ -32,6 +32,7 @@ import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.FileUtil;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.io.Text;
+import org.apache.hadoop.mapred.JobConf;
 import org.apache.hadoop.mapreduce.Cluster;
 import org.apache.hadoop.mapreduce.Job;
 import org.apache.hadoop.mapreduce.JobContext;
@@ -71,7 +72,6 @@ public class AdlsMigrator extends Configured implements Tool {
   private Path metaFolder;
 
   private static final String PREFIX = "_AdlsMigrator";
-  private static final String WIP_PREFIX = "._WIP_";
   private static final String AdlsMigrator_DEFAULT_XML = "AdlsMigrator-default.xml";
   static final Random rand = new Random();
 
@@ -82,13 +82,14 @@ public class AdlsMigrator extends Configured implements Tool {
     if (inputOptions.shouldUseSnapshotDiff()) {
       // When "-diff" or "-rdiff" is passed, do sync() first, then
       // create copyListing based on snapshot diff.
-      AdlsMigratorSync AdlsMigratorSync = new AdlsMigratorSync(inputOptions, getConf());
+      /*AdlsMigratorSync AdlsMigratorSync = new AdlsMigratorSync(inputOptions, getConf());
       if (AdlsMigratorSync.sync()) {
         createInputFileListingWithDiff(job, AdlsMigratorSync);
       } else {
         throw new Exception("AdlsMigrator sync failed, input options: "
             + inputOptions);
-      }
+      }*/
+      throw new InvalidInputException("Snapshot diff support (-diff) is currently unsupported");
     } else {
       // When no "-diff" or "-rdiff" is passed, create copyListing
       // in regular way.
@@ -134,7 +135,6 @@ public class AdlsMigrator extends Configured implements Tool {
     
     try {
       inputOptions = (OptionsParser.parse(argv));
-      setOptionsForSplitLargeFile();
       setTargetPathExists();
       LOG.info("Input Options: " + inputOptions);
     } catch (Throwable e) {
@@ -229,62 +229,22 @@ public class AdlsMigrator extends Configured implements Tool {
    * for the benefit of CopyCommitter
    */
   private void setTargetPathExists() throws IOException {
-    Path target = inputOptions.getTargetPath();
-    FileSystem targetFS = target.getFileSystem(getConf());
-    boolean targetExists = targetFS.exists(target);
-    inputOptions.setTargetPathExists(targetExists);
-    getConf().setBoolean(AdlsMigratorConstants.CONF_LABEL_TARGET_PATH_EXISTS, 
-        targetExists);
-  }
-
-  /**
-   * Check if concat is supported by fs.
-   * Throws UnsupportedOperationException if not.
-   */
-  private void checkConcatSupport(FileSystem fs) {
-    try {
-      Path[] src = null;
-      Path tgt = null;
-      fs.concat(tgt, src);
-    } catch (UnsupportedOperationException use) {
-      throw new UnsupportedOperationException(
-          AdlsMigratorOptionSwitch.BLOCKS_PER_CHUNK.getSwitch() +
-          " is not supported since the target file system doesn't" +
-          " support concat.", use);
-    } catch (Exception e) {
-      // Ignore other exception
+    Configuration conf = getConf();
+    boolean allTargetsExist = true;
+    for (AdlsMigratorOptions.DataBoxItem dataBox : inputOptions.getDataBoxes()) {
+      Path dataBoxPath = dataBox.getTargetPath(inputOptions.getTargetContainer());
+      LOG.info("setTargetPathExists: Path: " + dataBoxPath.toString());
+      if (!dataBox.isDnsFullUri()) {
+        conf.set("fs.azure.account.key." + dataBox.getDataBoxDns(), dataBox.getAccountKey());
+      }
+      FileSystem targetFS = dataBoxPath.getFileSystem(conf);
+      if (!targetFS.exists(dataBoxPath)) {
+        LOG.error("Data Box:Container (" + dataBox.getDataBoxDns() + ":" + inputOptions.getTargetContainer() + ") does not exist");
+        allTargetsExist = false;
+      }
     }
+    conf.setBoolean(AdlsMigratorConstants.CONF_LABEL_TARGET_PATH_EXISTS, allTargetsExist);
   }
-
-  /**
-   * Set up needed options for splitting large files.
-   */
-  private void setOptionsForSplitLargeFile() throws IOException {
-    if (!inputOptions.splitLargeFile()) {
-      return;
-    }
-    Path target = inputOptions.getTargetPath();
-    FileSystem targetFS = target.getFileSystem(getConf());
-    checkConcatSupport(targetFS);
-
-    LOG.info("Enabling preserving blocksize since "
-        + AdlsMigratorOptionSwitch.BLOCKS_PER_CHUNK.getSwitch() + " is passed.");
-    inputOptions.preserve(FileAttribute.BLOCKSIZE);
-
-    LOG.info("Set " +
-        AdlsMigratorOptionSwitch.APPEND.getSwitch()
-        + " to false since " + AdlsMigratorOptionSwitch.BLOCKS_PER_CHUNK.getSwitch()
-        + " is passed.");
-    inputOptions.setAppend(false);
-
-    LOG.info("Set " +
-        AdlsMigratorConstants.CONF_LABEL_SIMPLE_LISTING_RANDOMIZE_FILES
-        + " to false since " + AdlsMigratorOptionSwitch.BLOCKS_PER_CHUNK.getSwitch()
-        + " is passed.");
-    getConf().setBoolean(
-        AdlsMigratorConstants.CONF_LABEL_SIMPLE_LISTING_RANDOMIZE_FILES, false);
-  }
-
 
   /**
    * Create Job object for submitting it, with all the configuration
@@ -309,8 +269,8 @@ public class AdlsMigrator extends Configured implements Tool {
     job.setMapOutputValueClass(Text.class);
     job.setOutputFormatClass(CopyOutputFormat.class);
     job.getConfiguration().set(JobContext.MAP_SPECULATIVE, "false");
-    job.getConfiguration().set(JobContext.NUM_MAPS,
-                  String.valueOf(inputOptions.getMaxMaps()));
+    job.getConfiguration().set(JobContext.NUM_MAPS, String.valueOf(inputOptions.getMaxMaps()));
+    ((JobConf)job.getConfiguration()).setNumMapTasks(inputOptions.getMaxMaps());
 
     if (inputOptions.getSslConfigurationFile() != null) {
       setupSSLConfig(job);
@@ -402,33 +362,15 @@ public class AdlsMigrator extends Configured implements Tool {
    */
   private void configureOutputFormat(Job job) throws IOException {
     final Configuration configuration = job.getConfiguration();
-    Path targetPath = inputOptions.getTargetPath();
+    Path targetPath = inputOptions.getDataBoxes()[0].getTargetPath(inputOptions.getTargetContainer());
     FileSystem targetFS = targetPath.getFileSystem(configuration);
-    targetPath = targetPath.makeQualified(targetFS.getUri(),
-                                          targetFS.getWorkingDirectory());
+                                          
     if (inputOptions.shouldPreserve(AdlsMigratorOptions.FileAttribute.ACL)) {
       AdlsMigratorUtils.checkFileSystemAclSupport(targetFS);
     }
     if (inputOptions.shouldPreserve(AdlsMigratorOptions.FileAttribute.XATTR)) {
       AdlsMigratorUtils.checkFileSystemXAttrSupport(targetFS);
     }
-    if (inputOptions.shouldAtomicCommit()) {
-      Path workDir = inputOptions.getAtomicWorkPath();
-      if (workDir == null) {
-        workDir = targetPath.getParent();
-      }
-      workDir = new Path(workDir, WIP_PREFIX + targetPath.getName()
-                                + rand.nextInt());
-      FileSystem workFS = workDir.getFileSystem(configuration);
-      if (!FileUtil.compareFs(targetFS, workFS)) {
-        throw new IllegalArgumentException("Work path " + workDir +
-            " and target path " + targetPath + " are in different file system");
-      }
-      CopyOutputFormat.setWorkingDirectory(job, workDir);
-    } else {
-      CopyOutputFormat.setWorkingDirectory(job, targetPath);
-    }
-    CopyOutputFormat.setCommitDirectory(job, targetPath);
 
     Path logPath = inputOptions.getLogPath();
     if (logPath == null) {
@@ -463,14 +405,14 @@ public class AdlsMigrator extends Configured implements Tool {
    * @return Returns the path where the copy listing is created
    * @throws IOException - If any
    */
-  private Path createInputFileListingWithDiff(Job job, AdlsMigratorSync AdlsMigratorSync)
+  /*private Path createInputFileListingWithDiff(Job job, AdlsMigratorSync AdlsMigratorSync)
       throws IOException {
     Path fileListingPath = getFileListingPath();
     CopyListing copyListing = new SimpleCopyListing(job.getConfiguration(),
         job.getCredentials(), AdlsMigratorSync);
     copyListing.buildListing(fileListingPath, inputOptions);
     return fileListingPath;
-  }
+  }*/
 
   /**
    * Get default name of the copy listing file. Use the meta folder
@@ -512,10 +454,9 @@ public class AdlsMigrator extends Configured implements Tool {
     int exitCode;
     try {
       AdlsMigrator AdlsMigrator = new AdlsMigrator();
-      Cleanup CLEANUP = new Cleanup(AdlsMigrator);
+      Cleanup cleanup = new Cleanup(AdlsMigrator);
 
-      ShutdownHookManager.get().addShutdownHook(CLEANUP,
-        SHUTDOWN_HOOK_PRIORITY);
+      ShutdownHookManager.get().addShutdownHook(cleanup, SHUTDOWN_HOOK_PRIORITY);
       exitCode = ToolRunner.run(getDefaultConf(), AdlsMigrator, argv);
     }
     catch (Exception e) {

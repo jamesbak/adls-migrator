@@ -19,6 +19,9 @@
 package com.azure.storage.adlsmigrator.util;
 
 import com.google.common.collect.Maps;
+import org.codehaus.jackson.JsonGenerationException;
+import org.codehaus.jackson.map.JsonMappingException;
+import org.codehaus.jackson.map.ObjectMapper;
 
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
@@ -42,11 +45,18 @@ import com.azure.storage.adlsmigrator.CopyListingFileStatus;
 import com.azure.storage.adlsmigrator.AdlsMigratorOptions;
 import com.azure.storage.adlsmigrator.AdlsMigratorOptions.FileAttribute;
 import com.azure.storage.adlsmigrator.mapred.UniformSizeInputFormat;
+import com.azure.storage.adlsmigrator.mapred.lib.DataBoxLoadBalancedInputFormat;
+import com.azure.storage.adlsmigrator.AdlsMigratorConstants;
+
 import org.apache.hadoop.util.StringUtils;
 
+import java.io.PrintWriter;
 import java.io.IOException;
+import java.io.Reader;
+import java.io.StringReader;
 import java.text.DecimalFormat;
 import java.util.EnumSet;
+import java.util.IllegalFormatException;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
@@ -119,12 +129,12 @@ public class AdlsMigratorUtils {
    * @param options - Handle to input options
    * @return Class implementing the strategy specified in options.
    */
-  public static Class<? extends InputFormat> getStrategy(Configuration conf,
-      AdlsMigratorOptions options) {
-    String confLabel = "adlsmigrator."
+  public static Class<? extends InputFormat> getStrategy(Configuration conf, AdlsMigratorOptions options) {
+    return DataBoxLoadBalancedInputFormat.class;
+    /*String confLabel = "adlsmigrator."
         + StringUtils.toLowerCase(options.getCopyStrategy())
-        + ".strategy" + ".impl";
-    return conf.getClass(confLabel, UniformSizeInputFormat.class, InputFormat.class);
+        + ".strategy.impl";
+    return conf.getClass(confLabel, DataBoxLoadBalancedInputFormat.class, InputFormat.class);*/
   }
 
   /**
@@ -145,6 +155,37 @@ public class AdlsMigratorUtils {
     String sourceRootPathString = sourceRootPath.toUri().getPath();
     return sourceRootPathString.equals("/") ? childPathString :
         childPathString.substring(sourceRootPathString.length());
+  }
+
+  /**
+   * Serialization helpers for Data Box configuration
+   */
+  public static String getDataBoxesAsJson(AdlsMigratorOptions.DataBoxItem[] dataBoxes) throws IOException {
+    try {
+      ObjectMapper objectMapper = new ObjectMapper();
+      String retval = objectMapper.writeValueAsString(dataBoxes);
+      LOG.debug("Serialized Data Boxes: " + retval);
+      return retval;
+    } catch (JsonGenerationException ex) {
+      throw new IOException("Failure encoding to JSON", ex);
+    } 
+  }
+
+  public static <T extends AdlsMigratorOptions.DataBoxItem> T[] parseDataBoxesFromJson(String jsonConfig, Class<T[]> arrayType) 
+                                                                throws IOException {
+    return parseDataBoxesFromJson(new StringReader(jsonConfig), arrayType);  
+  }
+
+  public static <T extends AdlsMigratorOptions.DataBoxItem> T[] parseDataBoxesFromJson(Reader configReader, Class<T[]> arrayType) 
+                                                                throws IOException {
+    try {
+      ObjectMapper objectMapper = new ObjectMapper();
+      return objectMapper.readValue(configReader, arrayType);
+    } catch (JsonMappingException jme) {
+      // The old format doesn't have json top-level token to enclose the array.
+      // For backward compatibility, try parsing the old format.
+      throw new IOException("Failure parsing", jme);
+    }
   }
 
   /**
@@ -317,7 +358,7 @@ public class AdlsMigratorUtils {
    */
   public static LinkedList<CopyListingFileStatus> toCopyListingFileStatus(
       FileSystem fileSystem, FileStatus fileStatus, boolean preserveAcls,
-      boolean preserveXAttrs, boolean preserveRawXAttrs, int blocksPerChunk)
+      boolean preserveXAttrs, boolean preserveRawXAttrs)
           throws IOException {
     LinkedList<CopyListingFileStatus> copyListingFileStatus =
         new LinkedList<CopyListingFileStatus>();
@@ -326,52 +367,14 @@ public class AdlsMigratorUtils {
         fileSystem, fileStatus, preserveAcls,
         preserveXAttrs, preserveRawXAttrs,
         0, fileStatus.getLen());
-    final long blockSize = fileStatus.getBlockSize();
     if (LOG.isDebugEnabled()) {
-      LOG.debug("toCopyListing: " + fileStatus + " chunkSize: "
-          + blocksPerChunk + " isDFS: " +
-          (fileSystem instanceof DistributedFileSystem));
+      LOG.debug("toCopyListing: " + fileStatus 
+          + " isDFS: " + (fileSystem instanceof DistributedFileSystem));
     }
-    if ((blocksPerChunk > 0) &&
-        !fileStatus.isDirectory() &&
-        (fileStatus.getLen() > blockSize * blocksPerChunk)) {
-      // split only when the file size is larger than the intended chunk size
-      final BlockLocation[] blockLocations;
-      blockLocations = fileSystem.getFileBlockLocations(fileStatus, 0,
-            fileStatus.getLen());
-
-      int numBlocks = blockLocations.length;
-      long curPos = 0;
-      if (numBlocks <= blocksPerChunk) {
-        if (LOG.isDebugEnabled()) {
-          LOG.debug("  add file " + clfs);
-        }
-        copyListingFileStatus.add(clfs);
-      } else {
-        int i = 0;
-        while (i < numBlocks) {
-          long curLength = 0;
-          for (int j = 0; j < blocksPerChunk && i < numBlocks; ++j, ++i) {
-            curLength += blockLocations[i].getLength();
-          }
-          if (curLength > 0) {
-            CopyListingFileStatus clfs1 = new CopyListingFileStatus(clfs);
-            clfs1.setChunkOffset(curPos);
-            clfs1.setChunkLength(curLength);
-            if (LOG.isDebugEnabled()) {
-              LOG.debug("  add file chunk " + clfs1);
-            }
-            copyListingFileStatus.add(clfs1);
-            curPos += curLength;
-          }
-        }
-      }
-    } else {
-      if (LOG.isDebugEnabled()) {
-        LOG.debug("  add file/dir " + clfs);
-      }
-      copyListingFileStatus.add(clfs);
+    if (LOG.isDebugEnabled()) {
+      LOG.debug("  add file/dir " + clfs);
     }
+    copyListingFileStatus.add(clfs);
 
     return copyListingFileStatus;
   }
@@ -567,5 +570,44 @@ public class AdlsMigratorUtils {
     return new Path(targetFile.toString()
         + ".____adlsmigratorSplit____" + srcFileStatus.getChunkOffset()
         + "." + srcFileStatus.getChunkLength());
+  }
+
+  private static PrintWriter getSkippedFilesLogWriter(Configuration configuration, boolean create) 
+                            throws IOException {
+    String skippedFilesLog = configuration.get(AdlsMigratorConstants.CONF_LABEL_SKIPPED_FILES_LOGFILE);
+    if (org.apache.commons.lang3.StringUtils.isNotBlank(skippedFilesLog)) {
+        Path logFilename = new Path(skippedFilesLog);
+        FileSystem logFs = logFilename.getFileSystem(configuration);
+        return new PrintWriter(create ? logFs.create(logFilename) : logFs.append(logFilename));
+    }
+    return null;
+  }
+
+  public static void writeSkippedFiles(Configuration configuration, List<String> skippedFiles, String lineFormat) {
+    try {
+      try (PrintWriter logStream = getSkippedFilesLogWriter(configuration, true)) {
+        if (logStream != null) {
+          for (String skippedFile : skippedFiles) {
+            logStream.printf(lineFormat, skippedFile);
+          }
+        }
+      }
+    } catch (Exception ex) {
+      // Log & swallow the exception
+      LOG.warn("Failed to write skipped files log. Details: " + ex);
+    }
+  }
+
+  public static void appendSkippedFile(Configuration configuration, String skippedFile, Exception failure) {
+    try {
+      try (PrintWriter logStream = getSkippedFilesLogWriter(configuration, false)) {
+        if (logStream != null) {
+          logStream.println(skippedFile + " - " + StringUtils.stringifyException(failure));
+        }
+      }
+    } catch (Exception ex) {
+      // Log & swallow the exception
+      LOG.warn("Failed to write skipped files log. Details: " + ex);
+    }
   }
 }

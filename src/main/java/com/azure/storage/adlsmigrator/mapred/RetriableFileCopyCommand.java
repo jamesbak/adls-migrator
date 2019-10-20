@@ -102,15 +102,13 @@ public class RetriableFileCopyCommand extends RetriableCommand {
   private long doCopy(CopyListingFileStatus source, Path target,
       Mapper.Context context, EnumSet<FileAttribute> fileAttributes)
       throws IOException {
-    final boolean toAppend = action == FileAction.APPEND;
-    Path targetPath = toAppend ? target : getTmpFile(target, context);
     final Configuration configuration = context.getConfiguration();
     FileSystem targetFS = target.getFileSystem(configuration);
 
     try {
       if (LOG.isDebugEnabled()) {
         LOG.debug("Copying " + source.getPath() + " to " + target);
-        LOG.debug("Target file path: " + targetPath);
+        LOG.debug("Target file path: " + target);
       }
       final Path sourcePath = source.getPath();
       final FileSystem sourceFS = sourcePath.getFileSystem(configuration);
@@ -120,33 +118,21 @@ public class RetriableFileCopyCommand extends RetriableCommand {
 
       long offset = (action == FileAction.APPEND) ?
           targetFS.getFileStatus(target).getLen() : source.getChunkOffset();
-      long bytesRead = copyToFile(targetPath, targetFS, source,
+      long bytesRead = copyToFile(target, targetFS, source,
           offset, context, fileAttributes, sourceChecksum);
 
       if (!source.isSplit()) {
-        compareFileLengths(source, targetPath, configuration, bytesRead
+        compareFileLengths(source, target, configuration, bytesRead
             + offset);
       }
       //At this point, src&dest lengths are same. if length==0, we skip checksum
       if ((bytesRead != 0) && (!skipCrc)) {
         if (!source.isSplit()) {
-          compareCheckSums(sourceFS, source.getPath(), sourceChecksum,
-              targetFS, targetPath);
+          compareCheckSums(sourceFS, source.getPath(), sourceChecksum, targetFS, target);
         }
-      }
-      // it's not append case, thus we first write to a temporary file, rename
-      // it to the target path.
-      if (!toAppend) {
-        promoteTmpToTarget(targetPath, target, targetFS);
       }
       return bytesRead;
     } finally {
-      // note that for append case, it is possible that we append partial data
-      // and then fail. In that case, for the next retry, we either reuse the
-      // partial appended data if it is good or we overwrite the whole file
-      if (!toAppend) {
-        targetFS.delete(targetPath, false);
-      }
     }
   }
 
@@ -219,29 +205,6 @@ public class RetriableFileCopyCommand extends RetriableCommand {
       }
       throw new IOException(errorMessage.toString());
     }
-  }
-
-  //If target file exists and unable to delete target - fail
-  //If target doesn't exist and unable to create parent folder - fail
-  //If target is successfully deleted and parent exists, if rename fails - fail
-  private void promoteTmpToTarget(Path tmpTarget, Path target, FileSystem fs)
-                                  throws IOException {
-    if ((fs.exists(target) && !fs.delete(target, false))
-        || (!fs.exists(target.getParent()) && !fs.mkdirs(target.getParent()))
-        || !fs.rename(tmpTarget, target)) {
-      throw new IOException("Failed to promote tmp-file:" + tmpTarget
-                              + " to: " + target);
-    }
-  }
-
-  private Path getTmpFile(Path target, Mapper.Context context) {
-    Path targetWorkPath = new Path(context.getConfiguration().
-        get(AdlsMigratorConstants.CONF_LABEL_TARGET_WORK_PATH));
-
-    Path root = target.equals(targetWorkPath)? targetWorkPath.getParent() : targetWorkPath;
-    LOG.info("Creating temp file: " +
-        new Path(root, ".adlsmigrator.tmp." + context.getTaskAttemptID().toString()));
-    return new Path(root, ".adlsmigrator.tmp." + context.getTaskAttemptID().toString());
   }
 
   @VisibleForTesting

@@ -18,15 +18,27 @@
 
 package com.azure.storage.adlsmigrator;
 
+import org.codehaus.jackson.JsonGenerationException;
+import org.codehaus.jackson.map.JsonMappingException;
+import org.codehaus.jackson.map.ObjectMapper;
+import org.codehaus.jackson.annotate.JsonIgnore;
+
 import org.apache.commons.lang.StringUtils;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.Path;
 import com.azure.storage.adlsmigrator.util.AdlsMigratorUtils;
 
+import java.util.Arrays;
 import java.util.EnumSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.NoSuchElementException;
+import java.io.EOFException;
+import java.io.FileInputStream;
+import java.io.InputStreamReader;
+import java.io.IOException;
+import java.io.Reader;
+import java.net.URI;
 
 /**
  * The Options class encapsulates all AdlsMigrator options.
@@ -35,9 +47,79 @@ import java.util.NoSuchElementException;
  */
 public class AdlsMigratorOptions {
 
-  private boolean atomicCommit = false;
+  /**
+   * The DataBoxItem class holds information about the name & capabilities of each target Data Box.
+   * This is commonly populated by reading from a JSON configuration file.
+   */
+  public static class DataBoxItem {
+    protected String dataBoxDns;
+    protected String accountKey;
+    protected long sizeInBytes;
+    protected String container;
+
+    public DataBoxItem() {
+    }
+
+    public DataBoxItem(String dataBoxDns) {
+      this.dataBoxDns = dataBoxDns;
+    }
+
+    public String getDataBoxDns() {
+      return dataBoxDns;
+    }
+
+    public String getAccountKey() {
+      return accountKey;
+    }
+
+    public long getSizeInBytes() {
+      return sizeInBytes;
+    }
+
+    public String getContainer() {
+      return container;
+    }
+
+    @JsonIgnore
+    public boolean isUnsized() {
+      return sizeInBytes == -1;
+    }
+
+    @JsonIgnore
+    public boolean isDnsFullUri() {
+      //If we don't have an account key, we assume that the DNS is a full WASB Uri
+      return StringUtils.isBlank(accountKey);
+    }
+
+    @JsonIgnore
+    public boolean isContainerSpecified() {
+      return !StringUtils.isBlank(container);
+    }
+
+    public Path getTargetPath(String containerName) {
+      //If we don't have an account key, assume the DNS name is actually a URI
+      if (isDnsFullUri()) {
+        return new Path(URI.create(dataBoxDns));
+      } else {
+        return new Path("wasb", 
+          (isContainerSpecified() ? this.container : containerName) + 
+          "@" + 
+          dataBoxDns, "/");
+      }
+    }
+
+    @Override
+    public String toString() {
+      return  "DataBoxItem {" + 
+                "DataBox: " + dataBoxDns + ", " +
+                (isContainerSpecified() ? "Container: " + container + ", " : "") +
+                "Key: " + (isDnsFullUri() ? "Not specified" : "Supplied") + ", " +
+                "Size: " + (isUnsized() ? "Unsized" : sizeInBytes) + 
+              "}";
+    }  
+  }
+
   private boolean syncFolder = false;
-  private boolean deleteMissing = false;
   private boolean ignoreFailures = false;
   private boolean overwrite = false;
   private boolean append = false;
@@ -48,13 +130,6 @@ public class AdlsMigratorOptions {
   // the source cluster. Referred to as "Fdiff" in the code.
   // It's required that s2 is newer than s1.
   private boolean useDiff = false;
-
-  // When "-rdiff s2 s1 src tgt" is passed, apply reversed snapshot diff (from
-  // s2 to s1) of target cluster to the target cluster, so to make target
-  // cluster go back to s1. Referred to as "Rdiff" in the code.
-  // It's required that s2 is newer than s1, and src and tgt have exact same
-  // content at their s1, if src is not the same as tgt.
-  private boolean useRdiff = false;
 
   /** Whether to log additional info (path, size) in the SKIP/COPY log. */
   private boolean verboseLog = false;
@@ -76,13 +151,9 @@ public class AdlsMigratorOptions {
 
   private String sslConfigurationFile;
 
-  private String copyStrategy = AdlsMigratorConstants.UNIFORMSIZE;
-
   private EnumSet<FileAttribute> preserveStatus = EnumSet.noneOf(FileAttribute.class);
 
   private boolean preserveRawXattrs;
-
-  private Path atomicWorkPath;
 
   private Path logPath;
 
@@ -92,20 +163,30 @@ public class AdlsMigratorOptions {
   private String fromSnapshot;
   private String toSnapshot;
 
-  private Path targetPath;
+  private DataBoxItem[] dataBoxes;
+
+  private String targetContainer;
+
+  private int tasksPerDataBox = AdlsMigratorConstants.DEFAULT_TASKS_PER_DATABOX;
 
   /**
    * The path to a file containing a list of paths to filter out of the copy.
    */
   private String filtersFile;
 
+  /**
+   * The path to a logfile listing all skipped files.
+   */
+  private String skippedFilesLog;
+
+  /**
+   * The path to a JSON file containing identities to be mapped.
+   */
+  private String identitiesMapFile;
+
   // targetPathExist is a derived field, it's initialized in the
   // beginning of adlsmigrator.
   private boolean targetPathExists = true;
-
-  // Size of chunk in number of blocks when splitting large file into chunks
-  // to copy in parallel. Default is 0 and file are not splitted.
-  private int blocksPerChunk = 0;
 
   /**
    * The copyBufferSize to use in RetriableFileCopyCommand
@@ -129,27 +210,21 @@ public class AdlsMigratorOptions {
    * Constructor, to initialize source/target paths.
    * @param sourcePaths List of source-paths (including wildcards)
    *                     to be copied to target.
-   * @param targetPath Destination path for the dist-copy.
    */
-  public AdlsMigratorOptions(List<Path> sourcePaths, Path targetPath) {
+  public AdlsMigratorOptions(List<Path> sourcePaths) {
     assert sourcePaths != null && !sourcePaths.isEmpty() : "Invalid source paths";
-    assert targetPath != null : "Invalid Target path";
 
     this.sourcePaths = sourcePaths;
-    this.targetPath = targetPath;
   }
 
   /**
    * Constructor, to initialize source/target paths.
    * @param sourceFileListing File containing list of source paths
-   * @param targetPath Destination path for the dist-copy.
    */
-  public AdlsMigratorOptions(Path sourceFileListing, Path targetPath) {
+  public AdlsMigratorOptions(Path sourceFileListing) {
     assert sourceFileListing != null : "Invalid source paths";
-    assert targetPath != null : "Invalid Target path";
 
     this.sourceFileListing = sourceFileListing;
-    this.targetPath = targetPath;
   }
 
   /**
@@ -158,52 +233,31 @@ public class AdlsMigratorOptions {
    */
   public AdlsMigratorOptions(AdlsMigratorOptions that) {
     if (this != that && that != null) {
-      this.atomicCommit = that.atomicCommit;
       this.syncFolder = that.syncFolder;
-      this.deleteMissing = that.deleteMissing;
       this.ignoreFailures = that.ignoreFailures;
       this.overwrite = that.overwrite;
       this.skipCRC = that.skipCRC;
       this.blocking = that.blocking;
       this.useDiff = that.useDiff;
-      this.useRdiff = that.useRdiff;
       this.numListstatusThreads = that.numListstatusThreads;
       this.maxMaps = that.maxMaps;
       this.mapBandwidth = that.mapBandwidth;
       this.sslConfigurationFile = that.getSslConfigurationFile();
-      this.copyStrategy = that.copyStrategy;
       this.preserveStatus = that.preserveStatus;
       this.preserveRawXattrs = that.preserveRawXattrs;
-      this.atomicWorkPath = that.getAtomicWorkPath();
       this.logPath = that.getLogPath();
       this.sourceFileListing = that.getSourceFileListing();
       this.sourcePaths = that.getSourcePaths();
-      this.targetPath = that.getTargetPath();
-      this.targetPathExists = that.getTargetPathExists();
+      this.dataBoxes = that.getDataBoxes();
+      this.targetContainer = that.getTargetContainer();
+      this.tasksPerDataBox = that.getTasksPerDataBox();
+      this.targetPathExists = that.getTargetPathExists();  
       this.filtersFile = that.getFiltersFile();
-      this.blocksPerChunk = that.blocksPerChunk;
+      this.skippedFilesLog = that.getSkippedFilesLog();
+      this.identitiesMapFile = that.getIdentitiesMapFile();
       this.copyBufferSize = that.copyBufferSize;
       this.verboseLog = that.verboseLog;
     }
-  }
-
-  /**
-   * Should the data be committed atomically?
-   *
-   * @return true if data should be committed automically. false otherwise
-   */
-  public boolean shouldAtomicCommit() {
-    return atomicCommit;
-  }
-
-  /**
-   * Set if data need to be committed automatically
-   *
-   * @param atomicCommit - boolean switch
-   */
-  public void setAtomicCommit(boolean atomicCommit) {
-    validate(AdlsMigratorOptionSwitch.ATOMIC_COMMIT, atomicCommit);
-    this.atomicCommit = atomicCommit;
   }
 
   /**
@@ -223,39 +277,6 @@ public class AdlsMigratorOptions {
   public void setSyncFolder(boolean syncFolder) {
     validate(AdlsMigratorOptionSwitch.SYNC_FOLDERS, syncFolder);
     this.syncFolder = syncFolder;
-  }
-
-  /**
-   * Should target files missing in source should be deleted?
-   *
-   * @return true if zoombie target files to be removed. false otherwise
-   */
-  public boolean shouldDeleteMissing() {
-    return deleteMissing;
-  }
-
-  /**
-   * Set if files only present in target should be deleted
-   *
-   * @param deleteMissing - boolean switch
-   */
-  public void setDeleteMissing(boolean deleteMissing) {
-    validate(AdlsMigratorOptionSwitch.DELETE_MISSING, deleteMissing);
-    this.deleteMissing = deleteMissing;
-    ignoreDeleteMissingIfUseSnapshotDiff();
-  }
-
-  /**
-   * -delete and -diff are mutually exclusive.
-   * For backward compatibility, we ignore the -delete option here, instead of
-   * throwing an IllegalArgumentException. See HDFS-10397 for more discussion.
-   */
-  private void ignoreDeleteMissingIfUseSnapshotDiff() {
-    if (deleteMissing && (useDiff || useRdiff)) {
-      OptionsParser.LOG.warn("-delete and -diff/-rdiff are mutually exclusive. " +
-          "The -delete option will be ignored.");
-      deleteMissing = false;
-    }
   }
 
   /**
@@ -334,12 +355,8 @@ public class AdlsMigratorOptions {
     return this.useDiff;
   }
 
-  public boolean shouldUseRdiff() {
-    return this.useRdiff;
-  }
-
   public boolean shouldUseSnapshotDiff() {
-    return shouldUseDiff() || shouldUseRdiff();
+    return shouldUseDiff();
   }
 
   public String getFromSnapshot() {
@@ -355,15 +372,6 @@ public class AdlsMigratorOptions {
     this.toSnapshot = toSS;
     validate(AdlsMigratorOptionSwitch.DIFF, true);
     this.useDiff = true;
-    ignoreDeleteMissingIfUseSnapshotDiff();
-  }
-
-  public void setUseRdiff(String fromSS, String toSS) {
-    this.fromSnapshot = fromSS;
-    this.toSnapshot = toSS;
-    validate(AdlsMigratorOptionSwitch.RDIFF, true);
-    this.useRdiff = true;
-    ignoreDeleteMissingIfUseSnapshotDiff();
   }
 
   /**
@@ -513,24 +521,6 @@ public class AdlsMigratorOptions {
     preserveRawXattrs = true;
   }
 
-  /** Get work path for atomic commit. If null, the work
-   * path would be parentOf(targetPath) + "/._WIP_" + nameOf(targetPath)
-   *
-   * @return Atomic work path on the target cluster. Null if not set
-   */
-  public Path getAtomicWorkPath() {
-    return atomicWorkPath;
-  }
-
-  /**
-   * Set the work path for atomic commit
-   *
-   * @param atomicWorkPath - Path on the target cluster
-   */
-  public void setAtomicWorkPath(Path atomicWorkPath) {
-    this.atomicWorkPath = atomicWorkPath;
-  }
-
   /** Get output directory for writing adlsmigrator logs. Otherwise logs
    * are temporarily written to JobStagingDir/_logs and deleted
    * upon job completion
@@ -549,25 +539,6 @@ public class AdlsMigratorOptions {
    */
   public void setLogPath(Path logPath) {
     this.logPath = logPath;
-  }
-
-  /**
-   * Get the copy strategy to use. Uses appropriate input format
-   *
-   * @return copy strategy to use
-   */
-  public String getCopyStrategy() {
-    return copyStrategy;
-  }
-
-  /**
-   * Set the copy strategy to use. Should map to a strategy implementation
-   * in distp-default.xml
-   *
-   * @param copyStrategy - copy Strategy to use
-   */
-  public void setCopyStrategy(String copyStrategy) {
-    this.copyStrategy = copyStrategy;
   }
 
   /**
@@ -598,11 +569,59 @@ public class AdlsMigratorOptions {
   }
 
   /**
-   * Getter for the targetPath.
-   * @return The target-path.
+   * Getter for dataBoxesListing.
+   * @return Target Data Box listing path.
    */
-  public Path getTargetPath() {
-    return targetPath;
+  public DataBoxItem[] getDataBoxes() {
+    return dataBoxes;
+  }
+
+  public void setDataBoxesConfigFile(String dataBoxesConfigFile) throws IOException {
+    try (Reader input = new InputStreamReader(new FileInputStream(dataBoxesConfigFile), "UTF-8")) {
+      dataBoxes = AdlsMigratorUtils.parseDataBoxesFromJson(input, AdlsMigratorOptions.DataBoxItem[].class);
+    }
+  }
+
+  /**
+   * Setter for singleDataBox.
+   * @param singleDataBox The DNS name of the single target Data Box.
+   */
+  public void setSingleDataBox(String singleDataBox) {
+    assert singleDataBox != null;
+    dataBoxes = new DataBoxItem[1];
+    dataBoxes[0] = new DataBoxItem(singleDataBox);
+  }
+
+  /**
+   * Getter for the targetContainer.
+   * @return The target container name.
+   */
+  public String getTargetContainer() {
+    return targetContainer;
+  }
+  
+  /**
+   * Set targetContainer.
+   * @param targetContainer The name of the target container.
+   */
+  public String setTargetContainer(String targetContainer) {
+    return this.targetContainer = targetContainer;
+  }
+
+  /**
+   * Getter for tasksPerDataBox.
+   * @return The number of mapper tasks per 100TB Data Box (value is pro-rated for specified box size)
+   */
+  public int getTasksPerDataBox() {
+    return tasksPerDataBox;
+  }
+  
+  /**
+   * Set tasksPerDataBox.
+   * @param tasksPerDataBox The number of mapper tasks per 100TB Data Box (value is pro-rated for specified box size).
+   */
+  public int setTasksPerDataBox(int tasksPerDataBox) {
+    return this.tasksPerDataBox = tasksPerDataBox;
   }
 
   /**
@@ -638,16 +657,36 @@ public class AdlsMigratorOptions {
     this.filtersFile = filtersFilename;
   }
 
-  public final void setBlocksPerChunk(int csize) {
-    this.blocksPerChunk = csize;
+  /**
+   * File path for logfile listing all skipped files.
+   * @return - Skipped files logfile path.
+   */
+  public final String getSkippedFilesLog() {
+    return skippedFilesLog;
   }
 
-  public final int getBlocksPerChunk() {
-    return blocksPerChunk;
+  /**
+   * Set skippedFilesLog.
+   * @param skippedFilesLog The path to a logfile listing all skipped files.
+   */
+  public final void setSkippedFilesLog(String skippedFilesLog) {
+    this.skippedFilesLog = skippedFilesLog;
   }
 
-  public final boolean splitLargeFile() {
-    return blocksPerChunk > 0;
+  /**
+   * Local filesystem path for JSON file containing identities map
+   * @return - Identities map path.
+   */
+  public final String getIdentitiesMapFile() {
+    return identitiesMapFile;
+  }
+
+  /**
+   * Set identitiesMapFile.
+   * @param identitiesMapFile The path to the identities map file.
+   */
+  public final void setIdentitiesMapFile(String identitiesMapFile) {
+    this.identitiesMapFile = identitiesMapFile;
   }
 
   public final void setCopyBufferSize(int newCopyBufferSize) {
@@ -675,27 +714,12 @@ public class AdlsMigratorOptions {
         value : this.syncFolder);
     boolean overwrite = (option == AdlsMigratorOptionSwitch.OVERWRITE ?
         value : this.overwrite);
-    boolean deleteMissing = (option == AdlsMigratorOptionSwitch.DELETE_MISSING ?
-        value : this.deleteMissing);
-    boolean atomicCommit = (option == AdlsMigratorOptionSwitch.ATOMIC_COMMIT ?
-        value : this.atomicCommit);
     boolean skipCRC = (option == AdlsMigratorOptionSwitch.SKIP_CRC ?
         value : this.skipCRC);
     boolean append = (option == AdlsMigratorOptionSwitch.APPEND ? value : this.append);
     boolean useDiff = (option == AdlsMigratorOptionSwitch.DIFF ? value : this.useDiff);
-    boolean useRdiff = (option == AdlsMigratorOptionSwitch.RDIFF ? value : this.useRdiff);
     boolean shouldVerboseLog = (option == AdlsMigratorOptionSwitch.VERBOSE_LOG ?
         value : this.verboseLog);
-
-    if (syncFolder && atomicCommit) {
-      throw new IllegalArgumentException("Atomic commit can't be used with " +
-          "sync folder or overwrite options");
-    }
-
-    if (deleteMissing && !(overwrite || syncFolder)) {
-      throw new IllegalArgumentException("Delete missing is applicable " +
-          "only with update or overwrite options");
-    }
 
     if (overwrite && syncFolder) {
       throw new IllegalArgumentException("Overwrite and update options are " +
@@ -714,22 +738,18 @@ public class AdlsMigratorOptions {
       throw new IllegalArgumentException(
           "Append is disallowed when skipping CRC");
     }
-    if (!syncFolder && (useDiff || useRdiff)) {
+    if (!syncFolder && (useDiff)) {
       throw new IllegalArgumentException(
-          "-diff/-rdiff is valid only with -update option");
+          "-diff is valid only with -update option");
     }
 
-    if (useDiff || useRdiff) {
+    if (useDiff) {
       if (StringUtils.isBlank(fromSnapshot) ||
           StringUtils.isBlank(toSnapshot)) {
         throw new IllegalArgumentException(
             "Must provide both the starting and ending " +
-            "snapshot names for -diff/-rdiff");
+            "snapshot names for -diff");
       }
-    }
-    if (useDiff && useRdiff) {
-      throw new IllegalArgumentException(
-          "-diff and -rdiff are mutually exclusive");
     }
 
     if (shouldVerboseLog && logPath == null) {
@@ -742,39 +762,31 @@ public class AdlsMigratorOptions {
    *
    * @param conf - Configuration object to which the options need to be added
    */
-  public void appendToConf(Configuration conf) {
-    AdlsMigratorOptionSwitch.addToConf(conf, AdlsMigratorOptionSwitch.ATOMIC_COMMIT,
-        String.valueOf(atomicCommit));
-    AdlsMigratorOptionSwitch.addToConf(conf, AdlsMigratorOptionSwitch.IGNORE_FAILURES,
-        String.valueOf(ignoreFailures));
-    AdlsMigratorOptionSwitch.addToConf(conf, AdlsMigratorOptionSwitch.SYNC_FOLDERS,
-        String.valueOf(syncFolder));
-    AdlsMigratorOptionSwitch.addToConf(conf, AdlsMigratorOptionSwitch.DELETE_MISSING,
-        String.valueOf(deleteMissing));
-    AdlsMigratorOptionSwitch.addToConf(conf, AdlsMigratorOptionSwitch.OVERWRITE,
-        String.valueOf(overwrite));
-    AdlsMigratorOptionSwitch.addToConf(conf, AdlsMigratorOptionSwitch.APPEND,
-        String.valueOf(append));
-    AdlsMigratorOptionSwitch.addToConf(conf, AdlsMigratorOptionSwitch.DIFF,
-        String.valueOf(useDiff));
-    AdlsMigratorOptionSwitch.addToConf(conf, AdlsMigratorOptionSwitch.RDIFF,
-        String.valueOf(useRdiff));
-    AdlsMigratorOptionSwitch.addToConf(conf, AdlsMigratorOptionSwitch.SKIP_CRC,
-        String.valueOf(skipCRC));
-    AdlsMigratorOptionSwitch.addToConf(conf, AdlsMigratorOptionSwitch.BANDWIDTH,
-        String.valueOf(mapBandwidth));
-    AdlsMigratorOptionSwitch.addToConf(conf, AdlsMigratorOptionSwitch.PRESERVE_STATUS,
-        AdlsMigratorUtils.packAttributes(preserveStatus));
-    if (filtersFile != null) {
-      AdlsMigratorOptionSwitch.addToConf(conf, AdlsMigratorOptionSwitch.FILTERS,
-          filtersFile);
+  public void appendToConf(Configuration conf) throws IOException {
+
+    AdlsMigratorOptionSwitch.addToConf(conf, AdlsMigratorOptionSwitch.IGNORE_FAILURES, String.valueOf(ignoreFailures));
+    AdlsMigratorOptionSwitch.addToConf(conf, AdlsMigratorOptionSwitch.SYNC_FOLDERS, String.valueOf(syncFolder));
+    AdlsMigratorOptionSwitch.addToConf(conf, AdlsMigratorOptionSwitch.OVERWRITE, String.valueOf(overwrite));
+    AdlsMigratorOptionSwitch.addToConf(conf, AdlsMigratorOptionSwitch.APPEND, String.valueOf(append));
+    AdlsMigratorOptionSwitch.addToConf(conf, AdlsMigratorOptionSwitch.DIFF, String.valueOf(useDiff));
+    AdlsMigratorOptionSwitch.addToConf(conf, AdlsMigratorOptionSwitch.SKIP_CRC, String.valueOf(skipCRC));
+    AdlsMigratorOptionSwitch.addToConf(conf, AdlsMigratorOptionSwitch.BANDWIDTH, String.valueOf(mapBandwidth));
+    AdlsMigratorOptionSwitch.addToConf(conf, AdlsMigratorOptionSwitch.PRESERVE_STATUS, AdlsMigratorUtils.packAttributes(preserveStatus));
+    if (StringUtils.isNotBlank(filtersFile)) {
+      AdlsMigratorOptionSwitch.addToConf(conf, AdlsMigratorOptionSwitch.FILTERS, filtersFile);
     }
-    AdlsMigratorOptionSwitch.addToConf(conf, AdlsMigratorOptionSwitch.BLOCKS_PER_CHUNK,
-        String.valueOf(blocksPerChunk));
-    AdlsMigratorOptionSwitch.addToConf(conf, AdlsMigratorOptionSwitch.COPY_BUFFER_SIZE,
-        String.valueOf(copyBufferSize));
-    AdlsMigratorOptionSwitch.addToConf(conf, AdlsMigratorOptionSwitch.VERBOSE_LOG,
-        String.valueOf(verboseLog));
+    if (StringUtils.isNotBlank(skippedFilesLog)) {
+      AdlsMigratorOptionSwitch.addToConf(conf, AdlsMigratorOptionSwitch.SKIPPED_FILES_LOG, skippedFilesLog);
+    }
+    if (StringUtils.isNotBlank(identitiesMapFile)) {
+      AdlsMigratorOptionSwitch.addToConf(conf, AdlsMigratorOptionSwitch.IDENTITIES_MAP, identitiesMapFile);
+    }
+    AdlsMigratorOptionSwitch.addToConf(conf, AdlsMigratorOptionSwitch.COPY_BUFFER_SIZE, String.valueOf(copyBufferSize));
+    AdlsMigratorOptionSwitch.addToConf(conf, AdlsMigratorOptionSwitch.VERBOSE_LOG, String.valueOf(verboseLog));
+
+    AdlsMigratorOptionSwitch.addToConf(conf, AdlsMigratorOptionSwitch.TARGET_CONTAINER, targetContainer);
+    AdlsMigratorOptionSwitch.addToConf(conf, AdlsMigratorOptionSwitch.NUM_TASKS_PER_DATABOX, String.valueOf(tasksPerDataBox));
+    conf.set(AdlsMigratorConstants.CONF_LABEL_DATABOX_CONFIG, AdlsMigratorUtils.getDataBoxesAsJson(dataBoxes));
   }
 
   /**
@@ -785,14 +797,11 @@ public class AdlsMigratorOptions {
   @Override
   public String toString() {
     return "AdlsMigratorOptions{" +
-        "atomicCommit=" + atomicCommit +
         ", syncFolder=" + syncFolder +
-        ", deleteMissing=" + deleteMissing +
         ", ignoreFailures=" + ignoreFailures +
         ", overwrite=" + overwrite +
         ", append=" + append +
         ", useDiff=" + useDiff +
-        ", useRdiff=" + useRdiff +
         ", fromSnapshot=" + fromSnapshot +
         ", toSnapshot=" + toSnapshot +
         ", skipCRC=" + skipCRC +
@@ -801,17 +810,18 @@ public class AdlsMigratorOptions {
         ", maxMaps=" + maxMaps +
         ", mapBandwidth=" + mapBandwidth +
         ", sslConfigurationFile='" + sslConfigurationFile + '\'' +
-        ", copyStrategy='" + copyStrategy + '\'' +
         ", preserveStatus=" + preserveStatus +
         ", preserveRawXattrs=" + preserveRawXattrs +
-        ", atomicWorkPath=" + atomicWorkPath +
         ", logPath=" + logPath +
         ", sourceFileListing=" + sourceFileListing +
         ", sourcePaths=" + sourcePaths +
-        ", targetPath=" + targetPath +
+        ", dataBoxes=" + Arrays.toString(dataBoxes) +
+        ", targetContainer=" + targetContainer +
+        ", taskPerDataBox=" + tasksPerDataBox +
         ", targetPathExists=" + targetPathExists +
         ", filtersFile='" + filtersFile + '\'' +
-        ", blocksPerChunk=" + blocksPerChunk +
+        ", skippedFilesLog='" + skippedFilesLog + '\'' +
+        ", identitiesMapFile='" + identitiesMapFile + '\'' +
         ", copyBufferSize=" + copyBufferSize +
         ", verboseLog=" + verboseLog +
         '}';
