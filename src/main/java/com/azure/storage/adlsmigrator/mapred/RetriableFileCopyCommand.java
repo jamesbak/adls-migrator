@@ -323,7 +323,6 @@ public class RetriableFileCopyCommand extends RetriableCommand {
    * Such failures may be skipped if the AdlsMigratorOptions indicate so.
    * Write failures are intolerable, and amount to CopyMapper failure.
    */
-  @SuppressWarnings("serial")
   public static class CopyReadException extends IOException {
     public CopyReadException(Throwable rootCause) {
       super(rootCause);

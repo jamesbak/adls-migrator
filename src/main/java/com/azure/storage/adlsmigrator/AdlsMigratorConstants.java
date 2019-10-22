@@ -81,6 +81,9 @@ public class AdlsMigratorConstants {
   /* If input is based -f <<source listing>>, file containing the src paths */
   public static final String CONF_LABEL_LISTING_FILE_PATH = "adlsmigrator.listing.file.path";
 
+  /* Directory where the final data will be committed to.  */
+  public static final String CONF_LABEL_TARGET_FINAL_PATH = "adlsmigrator.target.final.path";
+
   /* Boolean to indicate whether the target of adlsmigrator exists. */
   public static final String CONF_LABEL_TARGET_PATH_EXISTS = "adlsmigrator.target.path.exists";
   

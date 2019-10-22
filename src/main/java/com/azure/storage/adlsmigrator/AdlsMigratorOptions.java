@@ -36,6 +36,7 @@ import java.util.NoSuchElementException;
 import java.io.EOFException;
 import java.io.FileInputStream;
 import java.io.InputStreamReader;
+import java.io.PrintWriter;
 import java.io.IOException;
 import java.io.Reader;
 import java.net.URI;
@@ -118,6 +119,9 @@ public class AdlsMigratorOptions {
               "}";
     }  
   }
+
+  private boolean transferAcls = false;
+  private Path targetPath;
 
   private boolean syncFolder = false;
   private boolean ignoreFailures = false;
@@ -233,6 +237,8 @@ public class AdlsMigratorOptions {
    */
   public AdlsMigratorOptions(AdlsMigratorOptions that) {
     if (this != that && that != null) {
+      this.transferAcls = that.getTransferAcls();
+      this.targetPath = that.getTargetPath();
       this.syncFolder = that.syncFolder;
       this.ignoreFailures = that.ignoreFailures;
       this.overwrite = that.overwrite;
@@ -258,6 +264,42 @@ public class AdlsMigratorOptions {
       this.copyBufferSize = that.copyBufferSize;
       this.verboseLog = that.verboseLog;
     }
+  }
+
+  /**
+   * Should transfer ACLs to final destination
+   *
+   * @return true if ACLs should be transfer
+   */
+  public boolean getTransferAcls() {
+    return transferAcls;
+  }
+
+  /**
+   * Set if only ACLs should be transfered to final destination
+   *
+   * @param transferAcls - boolean switch
+   */
+  public void setTransferAcls(boolean transferAcls) {
+    this.transferAcls = transferAcls;
+  }
+
+  /**
+   * Get final target path
+   *
+   * @return Path on target file system
+   */
+  public Path getTargetPath() {
+    return targetPath;
+  }
+
+  /**
+   * Set the final target path
+   *
+   * @param targetPath - Path on target file system
+   */
+  public void setTargetPath(Path targetPath) {
+    this.targetPath = targetPath;
   }
 
   /**
@@ -764,6 +806,7 @@ public class AdlsMigratorOptions {
    */
   public void appendToConf(Configuration conf) throws IOException {
 
+    AdlsMigratorOptionSwitch.addToConf(conf, AdlsMigratorOptionSwitch.COPY_ACLS, String.valueOf(transferAcls));
     AdlsMigratorOptionSwitch.addToConf(conf, AdlsMigratorOptionSwitch.IGNORE_FAILURES, String.valueOf(ignoreFailures));
     AdlsMigratorOptionSwitch.addToConf(conf, AdlsMigratorOptionSwitch.SYNC_FOLDERS, String.valueOf(syncFolder));
     AdlsMigratorOptionSwitch.addToConf(conf, AdlsMigratorOptionSwitch.OVERWRITE, String.valueOf(overwrite));
@@ -777,6 +820,8 @@ public class AdlsMigratorOptions {
     }
     if (StringUtils.isNotBlank(skippedFilesLog)) {
       AdlsMigratorOptionSwitch.addToConf(conf, AdlsMigratorOptionSwitch.SKIPPED_FILES_LOG, skippedFilesLog);
+      // Truncate the skipped files log
+      try (PrintWriter writer = AdlsMigratorUtils.getSkippedFilesLogWriter(conf, true)) {}
     }
     if (StringUtils.isNotBlank(identitiesMapFile)) {
       AdlsMigratorOptionSwitch.addToConf(conf, AdlsMigratorOptionSwitch.IDENTITIES_MAP, identitiesMapFile);
@@ -784,7 +829,9 @@ public class AdlsMigratorOptions {
     AdlsMigratorOptionSwitch.addToConf(conf, AdlsMigratorOptionSwitch.COPY_BUFFER_SIZE, String.valueOf(copyBufferSize));
     AdlsMigratorOptionSwitch.addToConf(conf, AdlsMigratorOptionSwitch.VERBOSE_LOG, String.valueOf(verboseLog));
 
-    AdlsMigratorOptionSwitch.addToConf(conf, AdlsMigratorOptionSwitch.TARGET_CONTAINER, targetContainer);
+    if (StringUtils.isNotBlank(targetContainer)) {
+      AdlsMigratorOptionSwitch.addToConf(conf, AdlsMigratorOptionSwitch.TARGET_CONTAINER, targetContainer);
+    }
     AdlsMigratorOptionSwitch.addToConf(conf, AdlsMigratorOptionSwitch.NUM_TASKS_PER_DATABOX, String.valueOf(tasksPerDataBox));
     conf.set(AdlsMigratorConstants.CONF_LABEL_DATABOX_CONFIG, AdlsMigratorUtils.getDataBoxesAsJson(dataBoxes));
   }
@@ -797,6 +844,8 @@ public class AdlsMigratorOptions {
   @Override
   public String toString() {
     return "AdlsMigratorOptions{" +
+        ", transferAcls=" + transferAcls +
+        ", targetPath=" + targetPath + 
         ", syncFolder=" + syncFolder +
         ", ignoreFailures=" + ignoreFailures +
         ", overwrite=" + overwrite +

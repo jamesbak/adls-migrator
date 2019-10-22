@@ -20,6 +20,10 @@ package com.azure.storage.adlsmigrator;
 
 import org.codehaus.jackson.map.JsonMappingException;
 import org.codehaus.jackson.map.ObjectMapper;
+import org.apache.commons.lang3.StringUtils;
+import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.FileSystem;
+import org.apache.hadoop.fs.Path;
 import org.codehaus.jackson.JsonGenerationException;
 import org.codehaus.jackson.annotate.JsonWriteNullProperties;
 import org.codehaus.jackson.map.SerializationConfig;
@@ -34,6 +38,8 @@ import java.io.InputStreamReader;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashSet;
+import java.util.Map;
+import java.util.stream.Collectors;
 
 /**
  * The IdentityMap holds a mapping between a local (Kerberos) identity and
@@ -76,14 +82,28 @@ public class IdentityMap {
   public boolean equals(Object obj) {
     if (obj instanceof IdentityMap) {
       return localIdentity.equals(((IdentityMap)obj).getLocalIdentity());
+    } else if (obj instanceof String) {
+      return localIdentity.equals((String)obj);
     }
     return false;
   }
 
-  public static void saveToJsonFile(HashSet<IdentityMap> identities, String filename) 
+  public static Path getIdentitiesMapFile(Configuration configuration) {
+    String identitiesMapFile = configuration.get(AdlsMigratorConstants.CONF_LABEL_IDENTITIES_MAP_FILE);
+    if (StringUtils.isNotBlank(identitiesMapFile)) {
+      return new Path(identitiesMapFile);
+    }
+    return null;
+  }
+
+  public static void saveToJsonFile(HashSet<IdentityMap> identities, Path filePath, Configuration configuration) 
                                       throws IOException {
+    if (filePath == null) {
+      return;
+    }
     try {
-      try (Writer writer = new OutputStreamWriter(new FileOutputStream(filename))) {
+      FileSystem fs = filePath.getFileSystem(configuration);
+      try (Writer writer = new OutputStreamWriter(fs.create(filePath))) {
         ObjectMapper objectMapper = new ObjectMapper();
         objectMapper.enable(SerializationConfig.Feature.INDENT_OUTPUT);
         objectMapper.writeValue(writer, identities);
@@ -93,19 +113,36 @@ public class IdentityMap {
     } 
   }
 
-  public static HashSet<IdentityMap> readFromJsonFile(String filename) 
+  public static Map<String, IdentityMap> readFromJsonFile(Path filePath, Configuration configuration) 
                                                     throws IOException {
+    if (filePath == null) {
+      throw new IOException("Unable to deserialize from JSON. filePath is null");
+    }                                                        
     try {
-      try (Reader input = new InputStreamReader(new FileInputStream(filename), "UTF-8")) {
+      FileSystem fs = filePath.getFileSystem(configuration);
+      try (Reader input = new InputStreamReader(fs.open(filePath), "UTF-8")) {
         ObjectMapper objectMapper = new ObjectMapper();
         IdentityMap[] identities = objectMapper.readValue(input, IdentityMap[].class);
-        return new HashSet<IdentityMap>(Arrays.asList(identities));
+        return Arrays.asList(identities)
+          .stream()
+          .collect(Collectors.toMap(i -> i.getLocalIdentity(), i -> i));
       }
     } catch (JsonMappingException jme) {
       // The old format doesn't have json top-level token to enclose the array.
       // For backward compatibility, try parsing the old format.
       throw new IOException("Failure parsing", jme);
     }
+  }
+
+  public static String mapIdentity(String srcIdentity, Map<String, IdentityMap> identities) {
+    String retval = srcIdentity;
+    if (identities != null) {
+      IdentityMap item = identities.get(srcIdentity);
+      if (item != null) {
+        retval = item.getCloudIdentity();
+      }
+    }
+    return retval;
   }
 }
 

@@ -39,8 +39,10 @@ import org.apache.hadoop.mapreduce.JobContext;
 import org.apache.hadoop.mapreduce.JobSubmissionFiles;
 import com.azure.storage.adlsmigrator.AdlsMigratorOptions.FileAttribute;
 import com.azure.storage.adlsmigrator.CopyListing.*;
+import com.azure.storage.adlsmigrator.mapred.CopyAclsMapper;
 import com.azure.storage.adlsmigrator.mapred.CopyMapper;
 import com.azure.storage.adlsmigrator.mapred.CopyOutputFormat;
+import com.azure.storage.adlsmigrator.mapred.UniformSizeInputFormat;
 import com.azure.storage.adlsmigrator.util.AdlsMigratorUtils;
 import org.apache.hadoop.util.ShutdownHookManager;
 import org.apache.hadoop.util.Tool;
@@ -205,8 +207,7 @@ public class AdlsMigrator extends Configured implements Tool {
     }
 
     String jobID = job.getJobID().toString();
-    job.getConfiguration().set(AdlsMigratorConstants.CONF_LABEL_ADLSMIGRATOR_JOB_ID,
-        jobID);
+    job.getConfiguration().set(AdlsMigratorConstants.CONF_LABEL_ADLSMIGRATOR_JOB_ID, jobID);
     LOG.info("AdlsMigrator job-id: " + jobID);
 
     return job;
@@ -231,16 +232,25 @@ public class AdlsMigrator extends Configured implements Tool {
   private void setTargetPathExists() throws IOException {
     Configuration conf = getConf();
     boolean allTargetsExist = true;
-    for (AdlsMigratorOptions.DataBoxItem dataBox : inputOptions.getDataBoxes()) {
-      Path dataBoxPath = dataBox.getTargetPath(inputOptions.getTargetContainer());
-      LOG.info("setTargetPathExists: Path: " + dataBoxPath.toString());
-      if (!dataBox.isDnsFullUri()) {
-        conf.set("fs.azure.account.key." + dataBox.getDataBoxDns(), dataBox.getAccountKey());
-      }
-      FileSystem targetFS = dataBoxPath.getFileSystem(conf);
-      if (!targetFS.exists(dataBoxPath)) {
-        LOG.error("Data Box:Container (" + dataBox.getDataBoxDns() + ":" + inputOptions.getTargetContainer() + ") does not exist");
+    if (inputOptions.getTransferAcls()) {
+      FileSystem fs = inputOptions.getTargetPath().getFileSystem(conf);
+      if (!fs.exists(inputOptions.getTargetPath())) {
+        LOG.error("Specified target path: " + inputOptions.getTargetPath() 
+                  + " does not exist. The target path must exist before transferring ACLs");
         allTargetsExist = false;
+      }
+    } else {
+      for (AdlsMigratorOptions.DataBoxItem dataBox : inputOptions.getDataBoxes()) {
+        Path dataBoxPath = dataBox.getTargetPath(inputOptions.getTargetContainer());
+        LOG.info("setTargetPathExists: Path: " + dataBoxPath.toString());
+        if (!dataBox.isDnsFullUri()) {
+          conf.set("fs.azure.account.key." + dataBox.getDataBoxDns(), dataBox.getAccountKey());
+        }
+        FileSystem targetFS = dataBoxPath.getFileSystem(conf);
+        if (!targetFS.exists(dataBoxPath)) {
+          LOG.error("Data Box:Container (" + dataBox.getDataBoxDns() + ":" + inputOptions.getTargetContainer() + ") does not exist");
+          allTargetsExist = false;
+        }
       }
     }
     conf.setBoolean(AdlsMigratorConstants.CONF_LABEL_TARGET_PATH_EXISTS, allTargetsExist);
@@ -259,11 +269,17 @@ public class AdlsMigrator extends Configured implements Tool {
       jobName += ": " + userChosenName;
     Job job = Job.getInstance(getConf());
     job.setJobName(jobName);
-    job.setInputFormatClass(AdlsMigratorUtils.getStrategy(getConf(), inputOptions));
+    if (inputOptions.getTransferAcls()) {
+      // When setting ACLs, we just distribute the files evenly across all map tasks
+      job.setInputFormatClass(UniformSizeInputFormat.class);
+      job.setMapperClass(CopyAclsMapper.class);
+    } else {
+      job.setInputFormatClass(AdlsMigratorUtils.getStrategy(getConf(), inputOptions));
+      job.setMapperClass(CopyMapper.class);
+    }
     job.setJarByClass(CopyMapper.class);
     configureOutputFormat(job);
 
-    job.setMapperClass(CopyMapper.class);
     job.setNumReduceTasks(0);
     job.setMapOutputKeyClass(Text.class);
     job.setMapOutputValueClass(Text.class);
@@ -362,7 +378,9 @@ public class AdlsMigrator extends Configured implements Tool {
    */
   private void configureOutputFormat(Job job) throws IOException {
     final Configuration configuration = job.getConfiguration();
-    Path targetPath = inputOptions.getDataBoxes()[0].getTargetPath(inputOptions.getTargetContainer());
+    Path targetPath = inputOptions.getTransferAcls() ?
+                        inputOptions.getTargetPath() : 
+                        inputOptions.getDataBoxes()[0].getTargetPath(inputOptions.getTargetContainer());
     FileSystem targetFS = targetPath.getFileSystem(configuration);
                                           
     if (inputOptions.shouldPreserve(AdlsMigratorOptions.FileAttribute.ACL)) {
@@ -371,6 +389,7 @@ public class AdlsMigrator extends Configured implements Tool {
     if (inputOptions.shouldPreserve(AdlsMigratorOptions.FileAttribute.XATTR)) {
       AdlsMigratorUtils.checkFileSystemXAttrSupport(targetFS);
     }
+    CopyOutputFormat.setCommitDirectory(job, targetPath);
 
     Path logPath = inputOptions.getLogPath();
     if (logPath == null) {

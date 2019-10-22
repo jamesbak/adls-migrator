@@ -220,6 +220,7 @@ public class DataBoxLoadBalancedInputFormat extends InputFormat<Text, CopyListin
         }
         // Add the file's identites to our map
         identities.add(new IdentityMap(srcFileStatus.getOwner()));
+        LOG.debug("Src File Status: " + srcFileStatus.toString());
         identities.add(new IdentityMap(srcFileStatus.getGroup()));
         for (AclEntry entry : srcFileStatus.getAclEntries()) {
           if (StringUtils.isNotBlank(entry.getName())) {
@@ -230,15 +231,11 @@ public class DataBoxLoadBalancedInputFormat extends InputFormat<Text, CopyListin
       // If we have source files that couldn't be placed on a Data Box & we've specified a logfile, write it out now
       AdlsMigratorUtils.writeSkippedFiles(configuration, skippedFiles, "%s - cannot locate on Data Box\n");
       // Dump the identity map (if configured)
-      String identitiesMapFile = configuration.get(AdlsMigratorConstants.CONF_LABEL_IDENTITIES_MAP_FILE);
-      if (StringUtils.isNotBlank(identitiesMapFile)) {
-        try {
-          LOG.info("Saving local identities map file to: " + identitiesMapFile);
-          IdentityMap.saveToJsonFile(identities, identitiesMapFile);
-        } catch (IOException ex) {
-          // Log and swallow the exception
-          LOG.warn("Failed to save identities map. Details: " + ex);
-        }
+      try {
+        IdentityMap.saveToJsonFile(identities, IdentityMap.getIdentitiesMapFile(configuration), configuration);
+      } catch (IOException ex) {
+        // Log and swallow the exception
+        LOG.warn("Failed to save identities map. Details: " + ex);
       }
       // Dump out all of the splits for the AM
       splits = new ArrayList<InputSplit>(actualNumSplits);

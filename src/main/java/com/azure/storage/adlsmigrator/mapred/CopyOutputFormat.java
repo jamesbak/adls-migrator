@@ -45,4 +45,15 @@ public class CopyOutputFormat<K, V> extends TextOutputFormat<K, V> {
   public OutputCommitter getOutputCommitter(TaskAttemptContext context) throws IOException {
     return new CopyCommitter(getOutputPath(context), context);
   }
+
+  /**
+   * Setter for the final directory for DistCp (where files copied will be
+   * moved, atomically.)
+   * @param job The Job on whose configuration the working-directory is to be set.
+   * @param commitDirectory The path to use for final commit.
+   */
+  public static void setCommitDirectory(Job job, Path commitDirectory) {
+    job.getConfiguration().set(AdlsMigratorConstants.CONF_LABEL_TARGET_FINAL_PATH,
+        commitDirectory.toString());
+  }
 }

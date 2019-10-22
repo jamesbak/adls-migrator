@@ -189,10 +189,16 @@ public enum AdlsMigratorOptionSwitch {
       new Option("skippedlog", true, "The path specifying output log listing files that cannot be placed on any Data Box")),
 
   /**
-   * Local path specifying JSON file containing list of source file identities.
+   * Path specifying JSON file containing list of source file identities.
    */
   IDENTITIES_MAP(AdlsMigratorConstants.CONF_LABEL_IDENTITIES_MAP_FILE,
-      new Option("identitymap", true, "The local path specifying location of a JSON file that contains identities to be mapped"));
+      new Option("identitymap", true, "The path specifying location of a JSON file that contains identities to be mapped")),
+
+  /**
+   * Should AdlsMigrator be blocking
+   */
+  COPY_ACLS("",
+      new Option("transferacls", false, "Transfer ACLs from source to destination"));
 
 
   public static final String PRESERVE_STATUS_DEFAULT = "-prbugpct";

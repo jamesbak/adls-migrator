@@ -50,23 +50,7 @@ import org.apache.hadoop.util.StringUtils;
  * Mapper class that executes the AdlsMigrator copy operation.
  * Implements the o.a.h.mapreduce.Mapper interface.
  */
-public class CopyMapper extends Mapper<Text, CopyListingFileStatus, Text, Text> {
-
-  /**
-   * Hadoop counters for the AdlsMigrator CopyMapper.
-   * (These have been kept identical to the old AdlsMigrator,
-   * for backward compatibility.)
-   */
-  public static enum Counter {
-    COPY,         // Number of files received by the mapper for copy.
-    DIR_COPY,     // Number of directories received by the mapper for copy.
-    SKIP,         // Number of files skipped.
-    FAIL,         // Number of files that failed to be copied.
-    BYTESCOPIED,  // Number of bytes actually copied by the copy-mapper, total.
-    BYTESEXPECTED,// Number of bytes expected to be copied.
-    BYTESFAILED,  // Number of bytes that failed to be copied.
-    BYTESSKIPPED, // Number of bytes that were skipped from copy.
-  }
+public class CopyMapper extends MapperBase {
 
   /**
    * Indicate the action for each file
@@ -79,14 +63,10 @@ public class CopyMapper extends Mapper<Text, CopyListingFileStatus, Text, Text> 
 
   private static Log LOG = LogFactory.getLog(CopyMapper.class);
 
-  private Configuration conf;
-
   private boolean syncFolders = false;
-  private boolean ignoreFailures = false;
   private boolean skipCrc = false;
   private boolean overWrite = false;
   private boolean append = false;
-  private boolean verboseLog = false;
   private EnumSet<FileAttribute> preserve = EnumSet.noneOf(FileAttribute.class);
 
   private FileSystem targetFS = null;
@@ -101,85 +81,17 @@ public class CopyMapper extends Mapper<Text, CopyListingFileStatus, Text, Text> 
    */
   @Override
   public void setup(Context context) throws IOException, InterruptedException {
-    conf = context.getConfiguration();
+    super.setup(context);
 
     syncFolders = conf.getBoolean(AdlsMigratorOptionSwitch.SYNC_FOLDERS.getConfigLabel(), false);
-    ignoreFailures = conf.getBoolean(AdlsMigratorOptionSwitch.IGNORE_FAILURES.getConfigLabel(), false);
     skipCrc = conf.getBoolean(AdlsMigratorOptionSwitch.SKIP_CRC.getConfigLabel(), false);
     overWrite = conf.getBoolean(AdlsMigratorOptionSwitch.OVERWRITE.getConfigLabel(), false);
     append = conf.getBoolean(AdlsMigratorOptionSwitch.APPEND.getConfigLabel(), false);
-    verboseLog = conf.getBoolean(
-        AdlsMigratorOptionSwitch.VERBOSE_LOG.getConfigLabel(), false);
     preserve = AdlsMigratorUtils.unpackAttributes(conf.get(AdlsMigratorOptionSwitch.
         PRESERVE_STATUS.getConfigLabel()));
 
     targetDataBoxPath = ((DataBoxSplit.TaskSplit)context.getInputSplit()).getDataBoxBaseUri();
     targetFS = targetDataBoxPath.getFileSystem(conf);
-
-    if (conf.get(AdlsMigratorConstants.CONF_LABEL_SSL_CONF) != null) {
-      initializeSSLConf(context);
-    }
-  }
-
-  /**
-   * Initialize SSL Config if same is set in conf
-   *
-   * @throws IOException - If any
-   */
-  private void initializeSSLConf(Context context) throws IOException {
-    LOG.info("Initializing SSL configuration");
-
-    String workDir = conf.get(JobContext.JOB_LOCAL_DIR) + "/work";
-    Path[] cacheFiles = context.getLocalCacheFiles();
-
-    Configuration sslConfig = new Configuration(false);
-    String sslConfFileName = conf.get(AdlsMigratorConstants.CONF_LABEL_SSL_CONF);
-    Path sslClient = findCacheFile(cacheFiles, sslConfFileName);
-    if (sslClient == null) {
-      LOG.warn("SSL Client config file not found. Was looking for " + sslConfFileName +
-          " in " + Arrays.toString(cacheFiles));
-      return;
-    }
-    sslConfig.addResource(sslClient);
-
-    String trustStoreFile = conf.get("ssl.client.truststore.location");
-    Path trustStorePath = findCacheFile(cacheFiles, trustStoreFile);
-    sslConfig.set("ssl.client.truststore.location", trustStorePath.toString());
-
-    String keyStoreFile = conf.get("ssl.client.keystore.location");
-    Path keyStorePath = findCacheFile(cacheFiles, keyStoreFile);
-    sslConfig.set("ssl.client.keystore.location", keyStorePath.toString());
-
-    try {
-      OutputStream out = new FileOutputStream(workDir + "/" + sslConfFileName);
-      try {
-        sslConfig.writeXml(out);
-      } finally {
-        out.close();
-      }
-      conf.set(AdlsMigratorConstants.CONF_LABEL_SSL_KEYSTORE, sslConfFileName);
-    } catch (IOException e) {
-      LOG.warn("Unable to write out the ssl configuration. " +
-          "Will fall back to default ssl-client.xml in class path, if there is one", e);
-    }
-  }
-
-  /**
-   * Find entry from distributed cache
-   *
-   * @param cacheFiles - All localized cache files
-   * @param fileName - fileName to search
-   * @return Path of the filename if found, else null
-   */
-  private Path findCacheFile(Path[] cacheFiles, String fileName) {
-    if (cacheFiles != null && cacheFiles.length > 0) {
-      for (Path file : cacheFiles) {
-        if (file.getName().equals(fileName)) {
-          return file;
-        }
-      }
-    }
-    return null;
   }
 
   /**
@@ -195,7 +107,7 @@ public class CopyMapper extends Mapper<Text, CopyListingFileStatus, Text, Text> 
     Path sourcePath = sourceFileStatus.getPath();
     
     if (LOG.isDebugEnabled())
-      LOG.debug("AdlsMigratorMapper::map(): Received " + sourcePath + ", " + relPath);
+      LOG.debug("CopyMapper::map(): Received " + sourcePath + ", " + relPath);
 
     Path target = new Path(targetDataBoxPath, relPath.toString());
 
@@ -267,25 +179,16 @@ public class CopyMapper extends Mapper<Text, CopyListingFileStatus, Text, Text> 
               targetStatus, context, action, fileAttributes);
         }
       }
-      AdlsMigratorUtils.preserve(target.getFileSystem(conf), target,
-          sourceCurrStatus, fileAttributes, preserveRawXattrs);
+      AdlsMigratorUtils.preserve(
+        target.getFileSystem(conf), 
+        target,
+        sourceCurrStatus, 
+        fileAttributes, 
+        preserveRawXattrs,
+        null);
     } catch (IOException exception) {
-      handleFailures(exception, sourceFileStatus, target, context);
+      handleFailures(exception, sourceFileStatus, target, context, false);
     }
-  }
-
-  private String getFileType(CopyListingFileStatus fileStatus) {
-    if (null == fileStatus) {
-      return "N/A";
-    }
-    return fileStatus.isDirectory() ? "dir" : "file";
-  }
-
-  private String getFileType(FileStatus fileStatus) {
-    if (null == fileStatus) {
-      return "N/A";
-    }
-    return fileStatus.isDirectory() ? "dir" : "file";
   }
 
   private static EnumSet<AdlsMigratorOptions.FileAttribute>
@@ -337,34 +240,6 @@ public class CopyMapper extends Mapper<Text, CopyListingFileStatus, Text, Text> 
     incrementCounter(context, Counter.SKIP, 1);
     incrementCounter(context, Counter.BYTESSKIPPED, sourceFile.getLen());
 
-  }
-
-  private void handleFailures(IOException exception,
-      CopyListingFileStatus sourceFileStatus, Path target, Context context)
-      throws IOException, InterruptedException {
-
-    LOG.error("Failure in copying " + sourceFileStatus.getPath() +
-        (sourceFileStatus.isSplit()? ","
-            + " offset=" + sourceFileStatus.getChunkOffset()
-            + " chunkLength=" + sourceFileStatus.getChunkLength()
-            : "") +
-        " to " + target, exception);
-    AdlsMigratorUtils.appendSkippedFile(context.getConfiguration(), sourceFileStatus.getPath().toString(), exception);
-    
-    if (ignoreFailures &&
-        ExceptionUtils.indexOfType(exception, CopyReadException.class) != -1) {
-      incrementCounter(context, Counter.FAIL, 1);
-      incrementCounter(context, Counter.BYTESFAILED, sourceFileStatus.getLen());
-      context.write(null, new Text("FAIL: " + sourceFileStatus.getPath() + " - " +
-          StringUtils.stringifyException(exception)));
-    }
-    else
-      throw exception;
-  }
-
-  private static void incrementCounter(Context context, Counter counter,
-                                       long value) {
-    context.getCounter(counter).increment(value);
   }
 
   private FileAction checkUpdate(FileSystem sourceFS,

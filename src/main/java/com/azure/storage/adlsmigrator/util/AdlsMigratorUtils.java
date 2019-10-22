@@ -42,6 +42,7 @@ import org.apache.hadoop.mapreduce.InputFormat;
 import com.azure.storage.adlsmigrator.CopyListing.AclsNotSupportedException;
 import com.azure.storage.adlsmigrator.CopyListing.XAttrsNotSupportedException;
 import com.azure.storage.adlsmigrator.CopyListingFileStatus;
+import com.azure.storage.adlsmigrator.IdentityMap;
 import com.azure.storage.adlsmigrator.AdlsMigratorOptions;
 import com.azure.storage.adlsmigrator.AdlsMigratorOptions.FileAttribute;
 import com.azure.storage.adlsmigrator.mapred.UniformSizeInputFormat;
@@ -55,7 +56,9 @@ import java.io.IOException;
 import java.io.Reader;
 import java.io.StringReader;
 import java.text.DecimalFormat;
+import java.util.ArrayList;
 import java.util.EnumSet;
+import java.util.HashSet;
 import java.util.IllegalFormatException;
 import java.util.LinkedList;
 import java.util.List;
@@ -238,26 +241,36 @@ public class AdlsMigratorUtils {
   public static void preserve(FileSystem targetFS, Path path,
                               CopyListingFileStatus srcFileStatus,
                               EnumSet<FileAttribute> attributes,
-                              boolean preserveRawXattrs) throws IOException {
+                              boolean preserveRawXattrs,
+                              Map<String, IdentityMap> identities) throws IOException {
 
     // If not preserving anything from FileStatus, don't bother fetching it.
-    FileStatus targetFileStatus = attributes.isEmpty() ? null :
-        targetFS.getFileStatus(path);
-    String group = targetFileStatus == null ? null :
-        targetFileStatus.getGroup();
-    String user = targetFileStatus == null ? null :
-        targetFileStatus.getOwner();
+    FileStatus targetFileStatus = attributes.isEmpty() ? null : targetFS.getFileStatus(path);
+    String group = targetFileStatus == null ? null : targetFileStatus.getGroup();
+    String user = targetFileStatus == null ? null : targetFileStatus.getOwner();
     boolean chown = false;
 
     if (attributes.contains(FileAttribute.ACL)) {
       List<AclEntry> srcAcl = srcFileStatus.getAclEntries();
-      List<AclEntry> targetAcl = getAcl(targetFS, targetFileStatus);
+      List<AclEntry> targetAcl = srcAcl;
+      // Translate all entries if a map is specified
+      if (identities != null) {
+        targetAcl = new ArrayList<AclEntry>(srcAcl.size());
+        for (AclEntry entry : srcAcl) {
+          targetAcl.add(new AclEntry.Builder()
+            .setType(entry.getType())
+            .setName(IdentityMap.mapIdentity(entry.getName(), identities))
+            .setPermission(entry.getPermission())
+            .setScope(entry.getScope())
+            .build());
+        }
+      }
       if (!srcAcl.equals(targetAcl)) {
-        targetFS.setAcl(path, srcAcl);
+        LOG.debug("Setting ACL for file: " + path + ", " + AclEntry.aclSpecToString(targetAcl));
+        targetFS.setAcl(path, targetAcl);
       }
       // setAcl doesn't preserve sticky bit, so also call setPermission if needed.
-      if (srcFileStatus.getPermission().getStickyBit() !=
-          targetFileStatus.getPermission().getStickyBit()) {
+      if (srcFileStatus.getPermission().getStickyBit() != targetFileStatus.getPermission().getStickyBit()) {
         targetFS.setPermission(path, srcFileStatus.getPermission());
       }
     } else if (attributes.contains(FileAttribute.PERMISSION) &&
@@ -286,16 +299,20 @@ public class AdlsMigratorUtils {
       targetFS.setReplication(path, srcFileStatus.getReplication());
     }
 
-    if (attributes.contains(FileAttribute.GROUP) &&
-        !group.equals(srcFileStatus.getGroup())) {
-      group = srcFileStatus.getGroup();
-      chown = true;
+    if (attributes.contains(FileAttribute.GROUP)) {
+      String mappedGroup = IdentityMap.mapIdentity(srcFileStatus.getGroup(), identities);
+      if (!group.equals(mappedGroup)) {
+        group = mappedGroup;
+        chown = true;
+      }
     }
 
-    if (attributes.contains(FileAttribute.USER) &&
-        !user.equals(srcFileStatus.getOwner())) {
-      user = srcFileStatus.getOwner();
-      chown = true;
+    if (attributes.contains(FileAttribute.USER)) {
+      String mappedUser = IdentityMap.mapIdentity(srcFileStatus.getOwner(), identities);
+      if (!user.equals(mappedUser)) {
+        user = mappedUser;
+        chown = true;
+      }
     }
 
     if (chown) {
@@ -400,13 +417,11 @@ public class AdlsMigratorUtils {
       long chunkOffset, long chunkLength) throws IOException {
     CopyListingFileStatus copyListingFileStatus =
         new CopyListingFileStatus(fileStatus, chunkOffset, chunkLength);
-    if (preserveAcls) {
-      FsPermission perm = fileStatus.getPermission();
-      if (perm.getAclBit()) {
-        List<AclEntry> aclEntries = fileSystem.getAclStatus(
-          fileStatus.getPath()).getEntries();
-        copyListingFileStatus.setAclEntries(aclEntries);
-      }
+    FsPermission perm = fileStatus.getPermission();
+    if (perm.getAclBit()) {
+      List<AclEntry> aclEntries = fileSystem.getAclStatus(
+        fileStatus.getPath()).getEntries();
+      copyListingFileStatus.setAclEntries(aclEntries);
     }
     if (preserveXAttrs || preserveRawXAttrs) {
       Map<String, byte[]> srcXAttrs = fileSystem.getXAttrs(fileStatus.getPath());
@@ -572,7 +587,7 @@ public class AdlsMigratorUtils {
         + "." + srcFileStatus.getChunkLength());
   }
 
-  private static PrintWriter getSkippedFilesLogWriter(Configuration configuration, boolean create) 
+  public static PrintWriter getSkippedFilesLogWriter(Configuration configuration, boolean create) 
                             throws IOException {
     String skippedFilesLog = configuration.get(AdlsMigratorConstants.CONF_LABEL_SKIPPED_FILES_LOGFILE);
     if (org.apache.commons.lang3.StringUtils.isNotBlank(skippedFilesLog)) {
@@ -602,7 +617,7 @@ public class AdlsMigratorUtils {
     try {
       try (PrintWriter logStream = getSkippedFilesLogWriter(configuration, false)) {
         if (logStream != null) {
-          logStream.println(skippedFile + " - " + StringUtils.stringifyException(failure));
+          logStream.println(skippedFile + " - " + failure.getMessage());
         }
       }
     } catch (Exception ex) {
