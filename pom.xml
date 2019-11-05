@@ -19,7 +19,7 @@
   <modelVersion>4.0.0</modelVersion>
   <groupId>com.azure.storage</groupId>
   <artifactId>adls-migrator</artifactId>
-  <version>2.10.0-SNAPSHOT</version>
+  <version>1.0.0-SNAPSHOT</version>
   <description>This module copies data from a Hadoop Compatible FileSystem source to an Azure Data Box(es) for migration to Azure</description>
   <name>Azure Data Lake Storage Migrator</name>
   <packaging>jar</packaging>
@@ -28,7 +28,7 @@
     <file.encoding>UTF-8</file.encoding>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <downloadSources>true</downloadSources>
-    <hadoop.version>${project.version}</hadoop.version>
+    <hadoop.version>2.10.0-SNAPSHOT</hadoop.version>
   </properties>
 
   <dependencies>
@@ -254,6 +254,7 @@
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-shade-plugin</artifactId>
+        <version>3.2.1</version>
         <executions>
           <execution>
             <phase>package</phase>
