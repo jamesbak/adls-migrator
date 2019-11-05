@@ -51,4 +51,49 @@
         <value>org.apache.hadoop.mapreduce.Reducer</value>
     </property>
 
+    <property>
+        <name>fs.wasb.impl</name>
+        <value>com.azure.storage.adlsmigrator.org.apache.hadoop.fs.azure.NativeAzureFileSystem</value>
+    </property>
+
+    <property>
+        <name>fs.wasbs.impl</name>
+        <value>com.azure.storage.adlsmigrator.org.apache.hadoop.fs.azure.NativeAzureFileSystem$Secure</value>
+    </property>
+
+    <property>
+        <name>fs.AbstractFileSystem.wasb.impl</name>
+        <value>com.azure.storage.adlsmigrator.org.apache.hadoop.fs.azure.Wasb</value>
+    </property>
+
+    <property>
+        <name>fs.AbstractFileSystem.wasbs.impl</name>
+        <value>com.azure.storage.adlsmigrator.org.apache.hadoop.fs.azure.Wasbs</value>
+    </property>
+
+    <property>
+        <name>fs.AbstractFileSystem.abfs.impl</name>
+        <value>com.azure.storage.adlsmigrator.org.apache.hadoop.fs.azurebfs.Abfs</value>
+    </property>
+
+    <property>
+        <name>fs.AbstractFileSystem.abfss.impl</name>
+        <value>com.azure.storage.adlsmigrator.org.apache.hadoop.fs.azurebfs.Abfss</value>
+    </property>
+    
+    <property>
+        <name>fs.abfs.impl</name>
+        <value>com.azure.storage.adlsmigrator.org.apache.hadoop.fs.azurebfs.AzureBlobFileSystem</value>
+    </property>
+    
+    <property>
+        <name>fs.abfss.impl</name>
+        <value>com.azure.storage.adlsmigrator.org.apache.hadoop.fs.azurebfs.SecureAzureBlobFileSystem</value>
+    </property>
+
+    <property>
+        <name>fs.azure.write.request.size</name>
+        <value>10485760</value>
+    </property>
+   
 </configuration>

@@ -111,6 +111,13 @@
       <groupId>org.apache.hadoop</groupId>
       <artifactId>hadoop-azure</artifactId>
       <version>${hadoop.version}</version>
+      <scope>compile</scope>
+    </dependency>
+    <dependency>
+      <groupId>com.microsoft.azure</groupId>
+      <artifactId>azure-storage</artifactId>
+      <scope>compile</scope>
+      <version>5.4.0</version>
     </dependency>
     <dependency>
       <groupId>org.mockito</groupId>
@@ -241,6 +248,112 @@
             <goals>
               <goal>jar</goal>
             </goals>
+          </execution>
+        </executions>
+      </plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-shade-plugin</artifactId>
+        <executions>
+          <execution>
+            <phase>package</phase>
+            <goals>
+              <goal>shade</goal>
+            </goals>
+            <configuration>
+              <artifactSet>
+                <excludes>
+                  <exclude>log4j:log4j:jar:</exclude>
+                  <exclude>org.slf4j:*</exclude>
+                  <exclude>xmlenc:*</exclude>
+                  <exclude>javax.*:*</exclude>
+                  <exclude>com.sun.*:*</exclude>
+                  <exclude>org.codehaus.*:*</exclude>
+                  <exclude>asm:*</exclude>
+                  <exclude>com.fasterxml.woodstox:*</exclude>
+                  <exclude>io.netty:*</exclude>
+                </excludes>
+              </artifactSet>
+              <relocations>
+                <relocation>
+                  <pattern>com.microsoft.azure.storage</pattern>
+                  <shadedPattern>com.azure.storage.adlsmigrator.azure.storage</shadedPattern>
+                </relocation>
+                <relocation>
+                  <pattern>org.apache.hadoop</pattern>
+                  <shadedPattern>com.azure.storage.adlsmigrator.org.apache.hadoop</shadedPattern>
+                  <includes>
+                    <include>org.apache.hadoop.fs.azure.*</include>
+                    <include>org.apache.hadoop.fs.azurebfs.*</include>
+                  </includes>
+                  <excludes>
+                    <exclude>org.apache.hadoop.fs.AbstractFileSystem</exclude>
+                    <exclude>org.apache.hadoop.fs.AvroFSInput</exclude>
+                    <exclude>org.apache.hadoop.fs.BlockLocation</exclude>
+                    <exclude>org.apache.hadoop.fs.BlockStorageLocation</exclude>
+                    <exclude>org.apache.hadoop.fs.ChecksumFileSystem</exclude>
+                    <exclude>org.apache.hadoop.fs.CommonConfigurationKeysPublic</exclude>
+                    <exclude>org.apache.hadoop.fs.ContentSummary</exclude>
+                    <exclude>org.apache.hadoop.fs.FileChecksum</exclude>
+                    <exclude>org.apache.hadoop.fs.FileContext</exclude>
+                    <exclude>org.apache.hadoop.fs.FileStatus</exclude>
+                    <exclude>org.apache.hadoop.fs.FileSystem</exclude>
+                    <exclude>org.apache.hadoop.fs.FileUtil</exclude>
+                    <exclude>org.apache.hadoop.fs.FilterFileSystem</exclude>
+                    <exclude>org.apache.hadoop.fs.FSDataInputStream</exclude>
+                    <exclude>org.apache.hadoop.fs.FSDataOutputStream</exclude>
+                    <exclude>org.apache.hadoop.fs.FsServerDefaults</exclude>
+                    <exclude>org.apache.hadoop.fs.FsStatus</exclude>
+                    <exclude>org.apache.hadoop.fs.GlobFilter</exclude>
+                    <exclude>org.apache.hadoop.fs.HdfsVolumeId</exclude>
+                    <exclude>org.apache.hadoop.fs.LocalFileSystem</exclude>
+                    <exclude>org.apache.hadoop.fs.LocatedFileStatus</exclude>
+                    <exclude>org.apache.hadoop.fs.Options</exclude>
+                    <exclude>org.apache.hadoop.fs.Path</exclude>
+                    <exclude>org.apache.hadoop.fs.RawLocalFileSystem</exclude>
+                    <exclude>org.apache.hadoop.fs.Trash</exclude>
+                    <exclude>org.apache.hadoop.fs.TrashPolicy</exclude>
+                    <exclude>org.apache.hadoop.fs.CanSetDropBehind</exclude>
+                    <exclude>org.apache.hadoop.fs.CanSetReadahead</exclude>
+                    <exclude>org.apache.hadoop.fs.FsConstants</exclude>
+                    <exclude>org.apache.hadoop.fs.PathFilter</exclude>
+                    <exclude>org.apache.hadoop.fs.PositionedReadable</exclude>
+                    <exclude>org.apache.hadoop.fs.Seekable</exclude>
+                    <exclude>org.apache.hadoop.fs.Syncable</exclude>
+                    <exclude>org.apache.hadoop.fs.VolumeId</exclude>
+                    <exclude>org.apache.hadoop.fs.CacheFlag</exclude>
+                    <exclude>org.apache.hadoop.fs.CreateFlag</exclude>
+                    <exclude>org.apache.hadoop.fs.ReadOption</exclude>
+                    <exclude>org.apache.hadoop.fs.XAttrCodec</exclude>
+                    <exclude>org.apache.hadoop.fs.XAttrSetFlag</exclude>
+                    <exclude>org.apache.hadoop.conf.*</exclude>
+                    <exclude>org.apache.hadoop.metrics2.*</exclude>
+                    <exclude>org.apache.hadoop.io.*</exclude>
+                    <exclude>org.apache.hadoop.security.GroupMappingServiceProvider</exclude>
+                    <exclude>org.apache.hadoop.security.AccessControlException</exclude>
+                    <exclude>org.apache.hadoop.security.UserGroupInformation*</exclude>
+                    <exclude>org.apache.hadoop.security.User*</exclude>
+                    <exclude>org.apache.hadoop.security.Credentials*</exclude>
+                    <exclude>org.apache.hadoop.security.token.*</exclude>
+                    <exclude>org.apache.hadoop.util.*</exclude>
+                    <exclude>org.apache.hadoop.mapreduce.*</exclude>
+                    <exclude>org.apache.hadoop.mapred.*</exclude>
+                    <exclude>org.apache.hadoop.fs.azurebfs.extensions.*</exclude>
+                  </excludes>                  
+                </relocation>
+              </relocations>
+              <filters>
+                  <filter>
+                      <!-- filter out signature files from signed dependencies, else repackaging fails with security ex -->
+                      <artifact>*:*</artifact>
+                      <excludes>
+                          <exclude>META-INF/*.SF</exclude>
+                          <exclude>META-INF/*.DSA</exclude>
+                          <exclude>META-INF/*.RSA</exclude>
+                      </excludes>
+                  </filter>
+              </filters>
+            </configuration>
           </execution>
         </executions>
       </plugin>

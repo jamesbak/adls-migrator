@@ -50,9 +50,8 @@ public class AdlsMigratorConstants {
   public static final String CONF_LABEL_LISTSTATUS_THREADS = "adlsmigrator.liststatus.threads";
   public static final String CONF_LABEL_MAX_MAPS = "adlsmigrator.max.maps";
   public static final String CONF_LABEL_SOURCE_LISTING = "adlsmigrator.source.listing";
-  public static final String CONF_LABEL_DATABOX_LISTING = "adlsmigrator.databox.listing";
+  public static final String CONF_LABEL_TARGET_CONFIG_FILE = "adlsmigrator.target.config";
   public static final String CONF_LABEL_DATABOX_CONFIG = "adlsmigrator.databox.configuration";
-  public static final String CONF_LABEL_TARGET_CONTAINER = "adlsmigrator.target.container";
   public static final String CONF_LABEL_NUM_TASKS_PER_DATABOX = "adlsmigrator.tasks.per.databox";
   public static final String CONF_LABEL_SKIP_CRC = "adlsmigrator.skip.crc";
   public static final String CONF_LABEL_OVERWRITE = "adlsmigrator.copy.overwrite";

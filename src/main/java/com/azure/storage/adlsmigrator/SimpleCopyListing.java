@@ -627,15 +627,14 @@ public class SimpleCopyListing extends CopyListing {
   private void writeToFileListing(SequenceFile.Writer fileListWriter,
                                   CopyListingFileStatus fileStatus,
                                   Path sourcePathRoot) throws IOException {
-    if (LOG.isDebugEnabled()) {
-      LOG.debug("REL PATH: " + AdlsMigratorUtils.getRelativePath(sourcePathRoot,
-        fileStatus.getPath()) + ", FULL PATH: " + fileStatus.getPath());
-    }
-
     if (!shouldCopy(fileStatus.getPath())) {
+      LOG.debug("Filtering: " + fileStatus.getPath());
       return;
     }
-
+    if (LOG.isDebugEnabled()) {
+      LOG.debug("REL PATH: " + AdlsMigratorUtils.getRelativePath(sourcePathRoot, fileStatus.getPath()) 
+              + ", FULL PATH: " + fileStatus.getPath());
+    }
     fileListWriter.append(new Text(AdlsMigratorUtils.getRelativePath(sourcePathRoot,
         fileStatus.getPath())), fileStatus);
     fileListWriter.sync();

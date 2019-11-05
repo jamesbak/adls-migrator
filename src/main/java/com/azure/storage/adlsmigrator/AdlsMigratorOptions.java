@@ -81,6 +81,10 @@ public class AdlsMigratorOptions {
       return container;
     }
 
+    public String setContainer(String container) {
+      return this.container = container;
+    }
+
     @JsonIgnore
     public boolean isUnsized() {
       return sizeInBytes == -1;
@@ -93,19 +97,14 @@ public class AdlsMigratorOptions {
     }
 
     @JsonIgnore
-    public boolean isContainerSpecified() {
-      return !StringUtils.isBlank(container);
-    }
-
-    public Path getTargetPath(String containerName) {
+    public Path getTargetPath() {
       //If we don't have an account key, assume the DNS name is actually a URI
       if (isDnsFullUri()) {
         return new Path(URI.create(dataBoxDns));
       } else {
         return new Path("wasb", 
-          (isContainerSpecified() ? this.container : containerName) + 
-          "@" + 
-          dataBoxDns, "/");
+          this.container + "@" + dataBoxDns, 
+          "/");
       }
     }
 
@@ -113,11 +112,50 @@ public class AdlsMigratorOptions {
     public String toString() {
       return  "DataBoxItem {" + 
                 "DataBox: " + dataBoxDns + ", " +
-                (isContainerSpecified() ? "Container: " + container + ", " : "") +
+                "Container: " + container + ", " +
                 "Key: " + (isDnsFullUri() ? "Not specified" : "Supplied") + ", " +
                 "Size: " + (isUnsized() ? "Unsized" : sizeInBytes) + 
               "}";
     }  
+  }
+
+  /**
+   * Wrapper class for the file serialization. Allows default container to be applied.
+   */
+  static class TargetConfig {
+    private String container;
+    private DataBoxItem[] dataBoxes;
+
+    public TargetConfig() {
+    }
+
+    public String getContainer() {
+      return container;
+    }
+
+    public String setContainer(String container) {
+      return this.container = container;
+    }
+
+    public DataBoxItem[] getDataBoxes() {
+      return dataBoxes;
+    }
+
+    public void applyDefaultContainer() {
+      for (DataBoxItem dataBox : dataBoxes) {
+        if (StringUtils.isEmpty(dataBox.getContainer())) {
+          dataBox.setContainer(container);
+        }
+      }
+    }
+
+    @Override
+    public String toString() {
+      return "TargetConfig {" 
+            + "Container: " + container + ", "
+            + "DataBoxes: " + Arrays.toString(dataBoxes)
+            + "}";
+    }
   }
 
   private boolean transferAcls = false;
@@ -167,9 +205,7 @@ public class AdlsMigratorOptions {
   private String fromSnapshot;
   private String toSnapshot;
 
-  private DataBoxItem[] dataBoxes;
-
-  private String targetContainer;
+  private TargetConfig targetConfig;
 
   private int tasksPerDataBox = AdlsMigratorConstants.DEFAULT_TASKS_PER_DATABOX;
 
@@ -254,8 +290,7 @@ public class AdlsMigratorOptions {
       this.logPath = that.getLogPath();
       this.sourceFileListing = that.getSourceFileListing();
       this.sourcePaths = that.getSourcePaths();
-      this.dataBoxes = that.getDataBoxes();
-      this.targetContainer = that.getTargetContainer();
+      this.targetConfig= that.getTargetConfig();
       this.tasksPerDataBox = that.getTasksPerDataBox();
       this.targetPathExists = that.getTargetPathExists();  
       this.filtersFile = that.getFiltersFile();
@@ -610,18 +645,30 @@ public class AdlsMigratorOptions {
     this.sourcePaths = sourcePaths;
   }
 
+  private TargetConfig getTargetConfig() {
+    return targetConfig;
+  }
+
+  public void setTargetConfigFile(String targetConfigFile) throws IOException {
+    try (Reader input = new InputStreamReader(new FileInputStream(targetConfigFile), "UTF-8")) {
+      try {
+        ObjectMapper objectMapper = new ObjectMapper();
+        targetConfig = objectMapper.readValue(input, TargetConfig.class);
+        targetConfig.applyDefaultContainer();
+      } catch (JsonMappingException jme) {
+        // The old format doesn't have json top-level token to enclose the array.
+        // For backward compatibility, try parsing the old format.
+        throw new IOException("Failure parsing", jme);
+      }
+      }
+  }
+
   /**
    * Getter for dataBoxesListing.
    * @return Target Data Box listing path.
    */
   public DataBoxItem[] getDataBoxes() {
-    return dataBoxes;
-  }
-
-  public void setDataBoxesConfigFile(String dataBoxesConfigFile) throws IOException {
-    try (Reader input = new InputStreamReader(new FileInputStream(dataBoxesConfigFile), "UTF-8")) {
-      dataBoxes = AdlsMigratorUtils.parseDataBoxesFromJson(input, AdlsMigratorOptions.DataBoxItem[].class);
-    }
+    return targetConfig.getDataBoxes();
   }
 
   /**
@@ -630,24 +677,9 @@ public class AdlsMigratorOptions {
    */
   public void setSingleDataBox(String singleDataBox) {
     assert singleDataBox != null;
-    dataBoxes = new DataBoxItem[1];
-    dataBoxes[0] = new DataBoxItem(singleDataBox);
-  }
-
-  /**
-   * Getter for the targetContainer.
-   * @return The target container name.
-   */
-  public String getTargetContainer() {
-    return targetContainer;
-  }
-  
-  /**
-   * Set targetContainer.
-   * @param targetContainer The name of the target container.
-   */
-  public String setTargetContainer(String targetContainer) {
-    return this.targetContainer = targetContainer;
+    targetConfig = new TargetConfig();
+    targetConfig.dataBoxes = new DataBoxItem[1];
+    targetConfig.dataBoxes[0] = new DataBoxItem(singleDataBox);
   }
 
   /**
@@ -829,11 +861,10 @@ public class AdlsMigratorOptions {
     AdlsMigratorOptionSwitch.addToConf(conf, AdlsMigratorOptionSwitch.COPY_BUFFER_SIZE, String.valueOf(copyBufferSize));
     AdlsMigratorOptionSwitch.addToConf(conf, AdlsMigratorOptionSwitch.VERBOSE_LOG, String.valueOf(verboseLog));
 
-    if (StringUtils.isNotBlank(targetContainer)) {
-      AdlsMigratorOptionSwitch.addToConf(conf, AdlsMigratorOptionSwitch.TARGET_CONTAINER, targetContainer);
-    }
     AdlsMigratorOptionSwitch.addToConf(conf, AdlsMigratorOptionSwitch.NUM_TASKS_PER_DATABOX, String.valueOf(tasksPerDataBox));
-    conf.set(AdlsMigratorConstants.CONF_LABEL_DATABOX_CONFIG, AdlsMigratorUtils.getDataBoxesAsJson(dataBoxes));
+    if (targetConfig != null) {
+      conf.set(AdlsMigratorConstants.CONF_LABEL_DATABOX_CONFIG, AdlsMigratorUtils.getDataBoxesAsJson(targetConfig.getDataBoxes()));
+    }
   }
 
   /**
@@ -844,7 +875,7 @@ public class AdlsMigratorOptions {
   @Override
   public String toString() {
     return "AdlsMigratorOptions{" +
-        ", transferAcls=" + transferAcls +
+        "  transferAcls=" + transferAcls +
         ", targetPath=" + targetPath + 
         ", syncFolder=" + syncFolder +
         ", ignoreFailures=" + ignoreFailures +
@@ -864,8 +895,7 @@ public class AdlsMigratorOptions {
         ", logPath=" + logPath +
         ", sourceFileListing=" + sourceFileListing +
         ", sourcePaths=" + sourcePaths +
-        ", dataBoxes=" + Arrays.toString(dataBoxes) +
-        ", targetContainer=" + targetContainer +
+        ", targetConfig=" + targetConfig +
         ", taskPerDataBox=" + tasksPerDataBox +
         ", targetPathExists=" + targetPathExists +
         ", filtersFile='" + filtersFile + '\'' +

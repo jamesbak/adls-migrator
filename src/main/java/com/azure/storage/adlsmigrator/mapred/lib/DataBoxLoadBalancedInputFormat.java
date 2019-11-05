@@ -51,6 +51,8 @@ import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.TreeMap;
+import java.util.stream.IntStream;
+import java.util.stream.LongStream;
 import java.util.HashSet;
 
 /**
@@ -82,30 +84,77 @@ public class DataBoxLoadBalancedInputFormat extends InputFormat<Text, CopyListin
 
   static class AllocatedDataBox extends AdlsMigratorOptions.DataBoxItem {
     static class AllocatedSplit {
-      public long spaceAvailable;
+      private long spaceAvailable;
       private DataBoxSplit split;
-      private AllocatedDataBox dataBox;
       private int numRecords = 0;
 
-      public AllocatedSplit(AllocatedDataBox dataBox, long splitSize, DataBoxSplit split) {
+      public AllocatedSplit(long splitSize, DataBoxSplit split) {
         this.spaceAvailable = splitSize;
         this.split = split;
-        this.dataBox = dataBox;
       }
 
-      public void assignFile(Text filePath, CopyListingFileStatus fileStatus) throws IOException {
+      void assignFile(Text filePath, CopyListingFileStatus fileStatus) throws IOException {
         split.write(filePath, fileStatus);
         spaceAvailable -= fileStatus.getSizeToCopy();
-        dataBox.spaceAvailable -= fileStatus.getSizeToCopy();
         numRecords++;
-      }
+        LOG.debug("Assigning source file: " + filePath
+          + ", size: " + fileStatus.getSizeToCopy()
+          + " to split: " + split.getSplitName());
+}
 
       public int getNumRecords() {
         return numRecords;
       }
     }
+
+    static class FileTuple {
+      public Text filePath;
+      public CopyListingFileStatus fileStatus;
+
+      public FileTuple(Text filePath, CopyListingFileStatus fileStatus) {
+        this.filePath = filePath;
+        this.fileStatus = fileStatus;
+      }
+    }
     public long spaceAvailable;
     public AllocatedSplit[] splits;
+    private ArrayList<FileTuple> assignedFiles;
+
+    public AllocatedDataBox() {
+      this.assignedFiles = new ArrayList<FileTuple>();
+    }
+
+    public void assignFile(Text filePath, CopyListingFileStatus fileStatus) {
+      assignedFiles.add(new FileTuple(filePath, fileStatus));
+      spaceAvailable -= fileStatus.getSizeToCopy();
+    }
+
+    public void assignFilesToSplits() throws IOException {
+      // Firstly, sort the list so that we place the biggest files first
+      Collections.sort(assignedFiles,
+        new Comparator<FileTuple>() {
+          @Override
+          public int compare(FileTuple lhs, FileTuple rhs) {
+            return Long.compare(rhs.fileStatus.getSizeToCopy(), lhs.fileStatus.getSizeToCopy());
+          }
+        });
+      // Now sequentially assign each file - we maintain a sorted list of split array indexes (most space to least space),
+      // so that we easily get the next available split & easily adjust the ordering for each assignment
+      int[] orderedSplitIndeces = IntStream.range(0, splits.length).toArray();
+      for (FileTuple file : assignedFiles) {
+        splits[orderedSplitIndeces[0]].assignFile(file.filePath, file.fileStatus);
+        // Adjust the ordering of the splits
+        for (int idx = 1; idx < orderedSplitIndeces.length; idx++) {
+          if (splits[orderedSplitIndeces[idx - 1]].spaceAvailable < splits[orderedSplitIndeces[idx]].spaceAvailable) {
+            int currIdx = orderedSplitIndeces[idx - 1];
+            orderedSplitIndeces[idx - 1] = orderedSplitIndeces[idx];
+            orderedSplitIndeces[idx] = currIdx;
+          } else {
+            break;
+          }
+        }
+      }
+    }
   }
 
   // The pro-rating is not linear, so we use a lookup based on known throughput capabilities of each Data Box size.
@@ -123,7 +172,6 @@ public class DataBoxLoadBalancedInputFormat extends InputFormat<Text, CopyListin
     SequenceFile.Reader reader = null;
     try {
       DataBoxContext ctx = new DataBoxContext(configuration);
-      String targetContainer = configuration.get(AdlsMigratorConstants.CONF_LABEL_TARGET_CONTAINER);
       AllocatedDataBox[] dataBoxAllocations = AdlsMigratorUtils.parseDataBoxesFromJson(
         configuration.get(AdlsMigratorConstants.CONF_LABEL_DATABOX_CONFIG),
         AllocatedDataBox[].class);
@@ -161,18 +209,18 @@ public class DataBoxLoadBalancedInputFormat extends InputFormat<Text, CopyListin
                                   * dataBoxSizeFactors.ceilingEntry(dataBox.getSizeInBytes()).getValue() 
                                   * adjustmentFactor);
         numSplitsForDataBox = Math.max(numSplitsForDataBox, 1);
-        LOG.debug("Data Box: " + dataBox.getDataBoxDns() + ", Number of splits: " + numSplitsForDataBox);
+        LOG.debug("Data Box: " + dataBox.getTargetPath() + ", Number of splits: " + numSplitsForDataBox);
         dataBox.spaceAvailable = dataBox.getSizeInBytes();
         dataBox.splits = new AllocatedDataBox.AllocatedSplit[numSplitsForDataBox];
         for (int splitIdx = 0; splitIdx < numSplitsForDataBox; splitIdx++) {
-          dataBox.splits[splitIdx] = new AllocatedDataBox.AllocatedSplit(dataBox, 
-                                                                         dataBox.getSizeInBytes() / numSplitsForDataBox,
+          dataBox.splits[splitIdx] = new AllocatedDataBox.AllocatedSplit(dataBox.getSizeInBytes() / numSplitsForDataBox,
                                                                          ctx.createSplitForWrite(splitCounter++, 
-                                                                                                 dataBox.getTargetPath(targetContainer)));
+                                                                                                 dataBox.getTargetPath()));
         }
       }
       // Assign the source files to splits. This is deliberately a trivial assignment algo because we want the smaller data boxes to 
       // be assigned maximum load and there's no benefit to a more optimized placement algo.
+      // To assign the splits, we accumulate the assigned files & then evenly distribute the files across the splits for the same Data Box.
       Text srcRelPath = new Text();
       CopyListingFileStatus srcFileStatus = new CopyListingFileStatus();
       List<String> skippedFiles = new ArrayList<String>();
@@ -184,30 +232,7 @@ public class DataBoxLoadBalancedInputFormat extends InputFormat<Text, CopyListin
         for (AllocatedDataBox dataBox : dataBoxAllocations) {
           long fileSize = srcFileStatus.getSizeToCopy();
           if (fileSize <= dataBox.spaceAvailable) {
-            // Same algo to assign splits
-            boolean splitAssigned = false;
-            for (AllocatedDataBox.AllocatedSplit split : dataBox.splits) {
-              if (fileSize < split.spaceAvailable) {
-                LOG.debug("Assigning source file: " + srcRelPath 
-                  + ", size: " + fileSize
-                  + " to split: " + split.split.getSplitName());
-                split.assignFile(srcRelPath, srcFileStatus);
-                splitAssigned = true;
-                break;
-              }
-            }
-            if (!splitAssigned) {
-              // This situation can occur for single files that are bigger than [box size] / [num splits]. To handle this case
-              // select the split with the most available space & over-provision it.
-              AllocatedDataBox.AllocatedSplit split = Collections.max(Arrays.asList(dataBox.splits), 
-                              new Comparator<AllocatedDataBox.AllocatedSplit>() {
-                                @Override
-                                public int compare(AllocatedDataBox.AllocatedSplit lhs, AllocatedDataBox.AllocatedSplit rhs) {
-                                  return Long.compare(lhs.spaceAvailable, rhs.spaceAvailable);
-                                }
-                              });
-              split.assignFile(srcRelPath, srcFileStatus);
-            }
+            dataBox.assignFile(new Text(srcRelPath), srcFileStatus.clone());
             dataBoxAssigned = true;
             break;
           }
@@ -240,17 +265,21 @@ public class DataBoxLoadBalancedInputFormat extends InputFormat<Text, CopyListin
       // Dump out all of the splits for the AM
       splits = new ArrayList<InputSplit>(actualNumSplits);
       for (AllocatedDataBox dataBox : dataBoxAllocations) {
+        // Distribute the files to all of the splits for this Data Box
+        dataBox.assignFilesToSplits();
         for (AllocatedDataBox.AllocatedSplit split : dataBox.splits) {
           LOG.debug("Split: " + split.split.getPath() 
-            + " for Data Box: " + split.dataBox.getDataBoxDns() 
+            + " for Data Box: " + dataBox.getTargetPath()
             + ", Number of records: " + split.numRecords 
             + ", Space remaining: " + split.spaceAvailable);
           split.split.close();
           splits.add(new DataBoxSplit.TaskSplit(split.split.getPath(), 
-                                                dataBox.getTargetPath(targetContainer), 
+                                                dataBox.getTargetPath(), 
                                                 Long.MAX_VALUE));
         }
       }
+    } catch (CloneNotSupportedException ex) {
+      throw new IOException("Failed to construct splits list.", ex);
     } finally {
       IOUtils.closeStream(reader);
     }

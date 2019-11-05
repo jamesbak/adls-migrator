@@ -310,25 +310,24 @@ public class OptionsParser {
    */
   private static AdlsMigratorOptions parseSourceAndTargetPaths(CommandLine command) {
     AdlsMigratorOptions option;
-    String dataBoxesConfigFile = null;
+    String targetConfigFile = null;
     String singleDataBox = "";
     String targetPath = "";
     List<Path> sourcePaths = new ArrayList<Path>();
-    boolean requiresTargetContainer = true;
     boolean transferAcls = command.hasOption(AdlsMigratorOptionSwitch.COPY_ACLS.getSwitch());
-    boolean hasDataBoxesConfig = command.hasOption(AdlsMigratorOptionSwitch.DATABOX_FILE_LISTING.getSwitch());
+    boolean hasTargetConfig = command.hasOption(AdlsMigratorOptionSwitch.TARGET_CONFIG_FILE.getSwitch());
     boolean hasIdentitiesMap = command.hasOption(AdlsMigratorOptionSwitch.IDENTITIES_MAP.getSwitch());
 
     String[] leftOverArgs = command.getArgs();
     int leftOverArgsMaxIndex = leftOverArgs.length;
-    if (transferAcls && hasDataBoxesConfig) {
+    if (transferAcls && hasTargetConfig) {
       throw new IllegalArgumentException("The Data Box configuration file (-d) cannot be specified with the -transferacls option");
     } else if (transferAcls && !hasIdentitiesMap) {
       throw new IllegalArgumentException("The identities map file (-identitymap) must be specified with the -transferacls option");
     }
-    if (hasDataBoxesConfig) {
-      dataBoxesConfigFile = getVal(command, AdlsMigratorOptionSwitch.DATABOX_FILE_LISTING.getSwitch());
-      LOG.info("Data Box config file: " + dataBoxesConfigFile);
+    if (hasTargetConfig) {
+      targetConfigFile = getVal(command, AdlsMigratorOptionSwitch.TARGET_CONFIG_FILE.getSwitch());
+      LOG.info("Target config file: " + targetConfigFile);
     } else {
       //Last Argument is the single Data Box or destination
       if (leftOverArgs == null || leftOverArgs.length < 1) {
@@ -342,7 +341,6 @@ public class OptionsParser {
         singleDataBox = lastArg;
         LOG.info("Single Data Box: " + singleDataBox);
       }
-      requiresTargetContainer = false;
     }
     // Copy any source paths in the arguments to the list
     for (int index = 0; index < leftOverArgsMaxIndex; index++) {
@@ -364,28 +362,19 @@ public class OptionsParser {
       option.setTransferAcls(true);
       option.setTargetPath(new Path(targetPath));
     } else {
-      if (StringUtils.isNotBlank(dataBoxesConfigFile)) {
+      if (hasTargetConfig) {
         try {
-          option.setDataBoxesConfigFile(dataBoxesConfigFile);
-          for (AdlsMigratorOptions.DataBoxItem databox : option.getDataBoxes()) {
-            LOG.info("Data Box: DNS: " + databox.getDataBoxDns() + ", key: " + databox.getAccountKey() + ", size: " + databox.getSizeInBytes());
+          option.setTargetConfigFile(targetConfigFile);
+          if (LOG.isDebugEnabled()) {
+            for (AdlsMigratorOptions.DataBoxItem databox : option.getDataBoxes()) {
+              LOG.info("Data Box: DNS: " + databox.getDataBoxDns() + ", key: " + databox.getAccountKey() + ", size: " + databox.getSizeInBytes());
+            }
           }
         } catch (java.io.IOException ex) {
           throw new IllegalArgumentException("Error reading specified Data Box configuration file", ex);
         }
       } else {
         option.setSingleDataBox(singleDataBox);
-      }
-      if (requiresTargetContainer) {
-        if (!command.hasOption(AdlsMigratorOptionSwitch.TARGET_CONTAINER.getSwitch())) {
-          throw new IllegalArgumentException("Target container must be specified when using -c argument");
-        } else {
-          option.setTargetContainer(getVal(command, AdlsMigratorOptionSwitch.TARGET_CONTAINER.getSwitch()));
-        }
-      } else {
-        if (command.hasOption(AdlsMigratorOptionSwitch.TARGET_CONTAINER.getSwitch())) {
-          throw new IllegalArgumentException("Cannot specify target container if Data Box location is also specified");
-        }
       }
     }
 

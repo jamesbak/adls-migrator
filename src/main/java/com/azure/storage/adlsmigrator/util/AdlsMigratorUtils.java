@@ -167,7 +167,6 @@ public class AdlsMigratorUtils {
     try {
       ObjectMapper objectMapper = new ObjectMapper();
       String retval = objectMapper.writeValueAsString(dataBoxes);
-      LOG.debug("Serialized Data Boxes: " + retval);
       return retval;
     } catch (JsonGenerationException ex) {
       throw new IOException("Failure encoding to JSON", ex);

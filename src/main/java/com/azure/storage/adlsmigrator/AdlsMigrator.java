@@ -22,6 +22,7 @@ import java.io.IOException;
 import java.net.URL;
 import java.util.Random;
 
+import org.apache.hadoop.util.StringUtils;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.classification.InterfaceAudience;
@@ -74,7 +75,7 @@ public class AdlsMigrator extends Configured implements Tool {
   private Path metaFolder;
 
   private static final String PREFIX = "_AdlsMigrator";
-  private static final String AdlsMigrator_DEFAULT_XML = "AdlsMigrator-default.xml";
+  private static final String AdlsMigrator_DEFAULT_XML = "adlsmigrator-default.xml";
   static final Random rand = new Random();
 
   private boolean submitted;
@@ -140,7 +141,8 @@ public class AdlsMigrator extends Configured implements Tool {
       setTargetPathExists();
       LOG.info("Input Options: " + inputOptions);
     } catch (Throwable e) {
-      LOG.error("Invalid arguments: ", e);
+      LOG.error("Invalid arguments: " + StringUtils.stringifyException(e) + 
+        (e.getCause() != null ? ", Caused by:" + StringUtils.stringifyException(e.getCause()) : ""));
       System.err.println("Invalid arguments: " + e.getMessage());
       OptionsParser.usage();      
       return AdlsMigratorConstants.INVALID_ARGUMENT;
@@ -233,22 +235,28 @@ public class AdlsMigrator extends Configured implements Tool {
     Configuration conf = getConf();
     boolean allTargetsExist = true;
     if (inputOptions.getTransferAcls()) {
-      FileSystem fs = inputOptions.getTargetPath().getFileSystem(conf);
-      if (!fs.exists(inputOptions.getTargetPath())) {
-        LOG.error("Specified target path: " + inputOptions.getTargetPath() 
-                  + " does not exist. The target path must exist before transferring ACLs");
-        allTargetsExist = false;
+      LOG.info("setTargetPathExists: Path: " + inputOptions.getTargetPath().toString());
+      try {
+        FileSystem fs = inputOptions.getTargetPath().getFileSystem(conf);
+        if (!fs.exists(inputOptions.getTargetPath())) {
+          LOG.error("Specified target path: " + inputOptions.getTargetPath() 
+                    + " does not exist. The target path must exist before transferring ACLs");
+          allTargetsExist = false;
+        }
+      } catch (IOException ex) {
+        LOG.error("setTargetPathExists failure: " + ex.getCause());
+        throw ex;
       }
     } else {
       for (AdlsMigratorOptions.DataBoxItem dataBox : inputOptions.getDataBoxes()) {
-        Path dataBoxPath = dataBox.getTargetPath(inputOptions.getTargetContainer());
+        Path dataBoxPath = dataBox.getTargetPath();
         LOG.info("setTargetPathExists: Path: " + dataBoxPath.toString());
         if (!dataBox.isDnsFullUri()) {
           conf.set("fs.azure.account.key." + dataBox.getDataBoxDns(), dataBox.getAccountKey());
         }
         FileSystem targetFS = dataBoxPath.getFileSystem(conf);
         if (!targetFS.exists(dataBoxPath)) {
-          LOG.error("Data Box:Container (" + dataBox.getDataBoxDns() + ":" + inputOptions.getTargetContainer() + ") does not exist");
+          LOG.error("Data Box:Container (" + dataBoxPath + ") does not exist");
           allTargetsExist = false;
         }
       }
@@ -380,7 +388,7 @@ public class AdlsMigrator extends Configured implements Tool {
     final Configuration configuration = job.getConfiguration();
     Path targetPath = inputOptions.getTransferAcls() ?
                         inputOptions.getTargetPath() : 
-                        inputOptions.getDataBoxes()[0].getTargetPath(inputOptions.getTargetContainer());
+                        inputOptions.getDataBoxes()[0].getTargetPath();
     FileSystem targetFS = targetPath.getFileSystem(configuration);
                                           
     if (inputOptions.shouldPreserve(AdlsMigratorOptions.FileAttribute.ACL)) {
@@ -454,14 +462,19 @@ public class AdlsMigrator extends Configured implements Tool {
    * @throws Exception - Exception if any
    */
   private Path createMetaFolderPath() throws Exception {
-    Configuration configuration = getConf();
-    Path stagingDir = JobSubmissionFiles.getStagingDir(
-            new Cluster(configuration), configuration);
-    Path metaFolderPath = new Path(stagingDir, PREFIX + String.valueOf(rand.nextInt()));
-    if (LOG.isDebugEnabled())
-      LOG.debug("Meta folder location: " + metaFolderPath);
-    configuration.set(AdlsMigratorConstants.CONF_LABEL_META_FOLDER, metaFolderPath.toString());    
-    return metaFolderPath;
+    try {
+      Configuration configuration = getConf();
+      Path stagingDir = JobSubmissionFiles.getStagingDir(
+              new Cluster(configuration), configuration);
+      Path metaFolderPath = new Path(stagingDir, PREFIX + String.valueOf(rand.nextInt()));
+      if (LOG.isDebugEnabled())
+        LOG.debug("Meta folder location: " + metaFolderPath);
+      configuration.set(AdlsMigratorConstants.CONF_LABEL_META_FOLDER, metaFolderPath.toString());    
+      return metaFolderPath;
+    } catch (Exception ex) {
+      LOG.error("Failed to create meta folder: ", ex);
+      throw ex;
+    }
   }
 
   /**

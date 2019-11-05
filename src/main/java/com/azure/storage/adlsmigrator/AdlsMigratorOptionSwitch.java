@@ -101,14 +101,8 @@ public enum AdlsMigratorOptionSwitch {
    * the DNS name of each Data Box, the account key & size.
    * This JSON schema matches that defined in {@link com.azure.storage.adlsmigrator.AdlsMigratorOptions.DataBoxItem}.
    */
-  DATABOX_FILE_LISTING(AdlsMigratorConstants.CONF_LABEL_DATABOX_LISTING,
-      new Option("d", true, "JSON file specifying the list of Data Boxes with sizes to copy data to")),
-
-  /**
-   * The name of the container on each Data Box to copy the data to.
-   */
-  TARGET_CONTAINER(AdlsMigratorConstants.CONF_LABEL_TARGET_CONTAINER,
-      new Option("c", true, "Target container name on each Data Box")),
+  TARGET_CONFIG_FILE(AdlsMigratorConstants.CONF_LABEL_TARGET_CONFIG_FILE,
+      new Option("t", true, "JSON file specifying the target Data Box configuration to copy data to")),
 
   /**
    * The name of the container on each Data Box to copy the data to.

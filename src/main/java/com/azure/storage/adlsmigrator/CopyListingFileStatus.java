@@ -17,8 +17,12 @@
  */
 package com.azure.storage.adlsmigrator;
 
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
 import java.io.DataInput;
+import java.io.DataInputStream;
 import java.io.DataOutput;
+import java.io.DataOutputStream;
 import java.io.IOException;
 import java.util.Collections;
 import java.util.Iterator;
@@ -400,5 +404,23 @@ public final class CopyListingFileStatus implements Writable {
     }
     sb.append('}');
     return sb.toString();
+  }
+
+  @Override
+  public CopyListingFileStatus clone() throws CloneNotSupportedException {
+    try {
+      // Serialize the members to a byte stream & reading it back
+      ByteArrayOutputStream dataStream = new ByteArrayOutputStream();
+      DataOutputStream out = new DataOutputStream(dataStream);
+      this.write(out);
+
+      CopyListingFileStatus retval = new CopyListingFileStatus();
+      ByteArrayInputStream inStream = new ByteArrayInputStream(dataStream.toByteArray());
+      DataInputStream in = new DataInputStream(inStream);
+      retval.readFields(in);
+      return retval;
+    } catch (IOException ex) {
+      throw new CloneNotSupportedException();
+    }
   }
 }
